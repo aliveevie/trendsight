@@ -1,19 +1,10 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
-import { 
-  TrendingUp, 
-  TrendingDown, 
-  Minus, 
-  RefreshCw, 
-  Bitcoin, 
-  Coins,
-  DollarSign,
-  ArrowUpRight,
-  ArrowDownRight
-} from 'lucide-react';
+import { TrendingUp, TrendingDown, Minus, RefreshCw, Bitcoin, Coins, ArrowUpRight, ArrowDownRight } from 'lucide-react';
+import { runTrendAnalysis } from '@/lib/api';
 
 interface TrendData {
   symbol: string;
@@ -24,7 +15,6 @@ interface TrendData {
   confidence: number;
   action: string;
   reason: string;
-  icon: any;
 }
 
 interface TrendAnalysisProps {
@@ -34,66 +24,25 @@ interface TrendAnalysisProps {
 
 export const TrendAnalysis = ({ onStatusChange, onAnalysisUpdate }: TrendAnalysisProps) => {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [trends, setTrends] = useState<TrendData[]>([
-    {
-      symbol: 'ETH',
-      name: 'Ethereum',
-      price: 2456.78,
-      change: 0.0234,
-      trend: 'bullish',
-      confidence: 78.5,
-      action: 'BUY Signal',
-      reason: 'Strong upward momentum with volume confirmation',
-      icon: Coins
-    },
-    {
-      symbol: 'BTC',
-      name: 'Bitcoin',
-      price: 43567.21,
-      change: -0.0156,
-      trend: 'bearish',
-      confidence: 65.2,
-      action: 'HOLD',
-      reason: 'Consolidating near support levels',
-      icon: Bitcoin
-    }
-  ]);
+  const [trends, setTrends] = useState<TrendData[]>([]);
+  const [error, setError] = useState<string | null>(null);
 
-  const runAnalysis = async () => {
+  const handleRunAnalysis = async () => {
     setIsAnalyzing(true);
+    setError(null);
     onStatusChange('analyzing');
-    onAnalysisUpdate('Fetching market data...', 0);
-
-    // Simulate analysis steps
-    const steps = [
-      { action: 'Analyzing ETH trends...', delay: 1000, confidence: 25 },
-      { action: 'Checking BTC momentum...', delay: 1500, confidence: 50 },
-      { action: 'Calculating indicators...', delay: 1200, confidence: 75 },
-      { action: 'Generating signals...', delay: 800, confidence: 90 },
-      { action: 'Analysis complete!', delay: 500, confidence: 100 }
-    ];
-
-    for (const step of steps) {
-      await new Promise(resolve => setTimeout(resolve, step.delay));
-      onAnalysisUpdate(step.action, step.confidence);
-    }
-
-    // Update trend data with new analysis
-    setTrends(prev => prev.map(trend => ({
-      ...trend,
-      price: trend.price * (1 + (Math.random() - 0.5) * 0.02),
-      change: (Math.random() - 0.5) * 0.06,
-      confidence: Math.random() * 40 + 60,
-      trend: Math.random() > 0.5 ? 'bullish' : Math.random() > 0.3 ? 'bearish' : 'neutral'
-    })));
-
-    setIsAnalyzing(false);
-    onStatusChange('complete');
-    
-    setTimeout(() => {
+    onAnalysisUpdate('Running analysis...', 0);
+    try {
+      const result = await runTrendAnalysis();
+      setTrends(result);
+      onStatusChange('complete');
+      onAnalysisUpdate('Analysis complete!', 100);
+    } catch (err) {
+      setError('Failed to fetch trend analysis');
       onStatusChange('idle');
-      onAnalysisUpdate('Monitoring markets...', 0);
-    }, 2000);
+    } finally {
+      setIsAnalyzing(false);
+    }
   };
 
   const getTrendIcon = (trend: string) => {
@@ -127,83 +76,80 @@ export const TrendAnalysis = ({ onStatusChange, onAnalysisUpdate }: TrendAnalysi
             <span>Trend Analysis</span>
           </CardTitle>
           <Button 
-            onClick={runAnalysis}
+            onClick={handleRunAnalysis}
             disabled={isAnalyzing}
             size="sm"
             className="bg-gradient-primary hover:opacity-90"
           >
             <RefreshCw className={`mr-2 h-4 w-4 ${isAnalyzing ? 'animate-spin' : ''}`} />
-            Analyze
+            {isAnalyzing ? 'Analyzing...' : 'Analyze'}
           </Button>
         </div>
       </CardHeader>
-      
       <CardContent className="space-y-4">
-        {trends.map((trend, index) => {
-          const Icon = trend.icon;
-          return (
-            <div 
-              key={trend.symbol} 
-              className="p-4 rounded-lg border border-border bg-secondary/30 animate-fade-in"
-              style={{ animationDelay: `${index * 0.1}s` }}
-            >
-              <div className="flex items-center justify-between mb-3">
-                <div className="flex items-center space-x-3">
-                  <div className="w-8 h-8 bg-gradient-primary rounded-full flex items-center justify-center">
-                    <Icon className="h-4 w-4 text-primary-foreground" />
-                  </div>
-                  <div>
-                    <h4 className="font-semibold">{trend.symbol}</h4>
-                    <p className="text-sm text-muted-foreground">{trend.name}</p>
-                  </div>
+        {error && <div className="text-red-500">{error}</div>}
+        {isAnalyzing && <div className="text-muted-foreground">Running analysis...</div>}
+        {trends.length === 0 && !isAnalyzing && !error && (
+          <div className="text-muted-foreground">No trend data yet. Click Analyze to start.</div>
+        )}
+        {trends.map((trend, index) => (
+          <div 
+            key={trend.symbol} 
+            className="p-4 rounded-lg border border-border bg-secondary/30 animate-fade-in"
+            style={{ animationDelay: `${index * 0.1}s` }}
+          >
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center space-x-3">
+                <div className="w-8 h-8 bg-gradient-primary rounded-full flex items-center justify-center">
+                  {/* Optionally use a crypto icon here */}
+                  {trend.symbol === 'BTC' ? <Bitcoin className="h-4 w-4 text-primary-foreground" /> : <Coins className="h-4 w-4 text-primary-foreground" />}
                 </div>
-                
-                <div className="text-right">
-                  <p className="font-mono font-semibold">
-                    ${trend.price.toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                  </p>
-                  <div className="flex items-center space-x-1">
-                    {trend.change >= 0 ? (
-                      <ArrowUpRight className="h-3 w-3 text-success" />
-                    ) : (
-                      <ArrowDownRight className="h-3 w-3 text-destructive" />
-                    )}
-                    <span className={`text-sm ${trend.change >= 0 ? 'text-success' : 'text-destructive'}`}>
-                      {(trend.change * 100).toFixed(2)}%
-                    </span>
-                  </div>
+                <div>
+                  <h4 className="font-semibold">{trend.symbol}</h4>
+                  <p className="text-sm text-muted-foreground">{trend.name}</p>
                 </div>
               </div>
-
-              <div className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center space-x-2">
-                    {getTrendIcon(trend.trend)}
-                    <Badge variant="outline" className={getTrendColor(trend.trend)}>
-                      {trend.trend.toUpperCase()}
-                    </Badge>
-                  </div>
-                  
-                  <Badge variant="outline" className={getActionColor(trend.action)}>
-                    {trend.action}
-                  </Badge>
-                </div>
-
-                <div className="space-y-2">
-                  <div className="flex justify-between text-sm">
-                    <span className="text-muted-foreground">Confidence</span>
-                    <span className="font-medium">{trend.confidence.toFixed(1)}%</span>
-                  </div>
-                  <Progress value={trend.confidence} className="h-2" />
-                </div>
-
-                <p className="text-sm text-muted-foreground italic">
-                  {trend.reason}
+              <div className="text-right">
+                <p className="font-mono font-semibold">
+                  ${trend.price.toLocaleString(undefined, { minimumFractionDigits: 2 })}
                 </p>
+                <div className="flex items-center space-x-1">
+                  {trend.change >= 0 ? (
+                    <ArrowUpRight className="h-3 w-3 text-success" />
+                  ) : (
+                    <ArrowDownRight className="h-3 w-3 text-destructive" />
+                  )}
+                  <span className={`text-sm ${trend.change >= 0 ? 'text-success' : 'text-destructive'}`}>
+                    {(trend.change * 100).toFixed(2)}%
+                  </span>
+                </div>
               </div>
             </div>
-          );
-        })}
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center space-x-2">
+                  {getTrendIcon(trend.trend)}
+                  <Badge variant="outline" className={getTrendColor(trend.trend)}>
+                    {trend.trend.toUpperCase()}
+                  </Badge>
+                </div>
+                <Badge variant="outline" className={getActionColor(trend.action)}>
+                  {trend.action}
+                </Badge>
+              </div>
+              <div className="space-y-2">
+                <div className="flex justify-between text-sm">
+                  <span className="text-muted-foreground">Confidence</span>
+                  <span className="font-medium">{trend.confidence.toFixed(1)}%</span>
+                </div>
+                <Progress value={trend.confidence} className="h-2" />
+              </div>
+              <p className="text-sm text-muted-foreground italic">
+                {trend.reason}
+              </p>
+            </div>
+          </div>
+        ))}
       </CardContent>
     </Card>
   );

@@ -12,15 +12,13 @@ class TrendRequest(BaseModel):
 @app.post("/run-trend-analysis")
 def run_trend_analysis(request: TrendRequest):
     symbols = request.symbols or ["ethereum", "bitcoin"]
-    # Capture output
-    import io, sys
-    old_stdout = sys.stdout
-    sys.stdout = mystdout = io.StringIO()
-    agent.run_trend_analysis(symbols)
-    sys.stdout = old_stdout
-    output = mystdout.getvalue()
-    return {"output": output}
+    trends = agent.run_trend_analysis(symbols)
+    return {"trends": trends}
 
 @app.get("/")
 def root():
-    return {"message": "Trend Following Agent API is running."} 
+    return {"message": "Trend Following Agent API is running."}
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("trend_following_server:app", host="0.0.0.0", port=8084, reload=True) 
