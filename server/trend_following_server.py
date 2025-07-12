@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
 from trend_following_agent import TrendFollowingAgent
+from recall_tool import get_portfolio
 
 app = FastAPI()
 
@@ -25,6 +26,11 @@ def run_trend_analysis(request: TrendRequest):
     symbols = request.symbols or ["ethereum", "bitcoin"]
     trends = agent.run_trend_analysis(symbols)
     return {"trends": trends}
+
+@app.get("/dashboard-stats")
+def dashboard_stats():
+    portfolio = get_portfolio()
+    return {"portfolio": portfolio}
 
 @app.get("/")
 def root():

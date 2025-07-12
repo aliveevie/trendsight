@@ -9,4 +9,10 @@ export async function runTrendAnalysis(symbols?: string[]) {
   if (!res.ok) throw new Error('Failed to fetch trend analysis');
   const data = await res.json();
   return data.trends;
+}
+
+export async function getDashboardStats() {
+  const res = await fetch(`${BASE_URL}/dashboard-stats`);
+  if (!res.ok) throw new Error('Failed to fetch dashboard stats');
+  return res.json();
 } 
