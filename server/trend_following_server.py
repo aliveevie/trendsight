@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
 from trend_following_agent import TrendFollowingAgent
-from recall_tool import get_portfolio, recall_trade_tool
+from recall_tool import get_portfolio, recall_trade_tool, get_balances, get_trading_history
 
 app = FastAPI()
 
@@ -47,6 +47,14 @@ def dashboard_stats():
 def trade(request: TradeRequest):
     result = recall_trade_tool(request.fromToken, request.toToken, request.amount, request.reason or "AI trading action")
     return {"result": result}
+
+@app.get("/balances")
+def balances():
+    return {"balances": get_balances()}
+
+@app.get("/trading-history")
+def trading_history():
+    return {"history": get_trading_history()}
 
 @app.get("/")
 def root():

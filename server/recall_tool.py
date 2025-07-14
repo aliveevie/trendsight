@@ -35,11 +35,23 @@ def get_portfolio() -> dict:
         resp.raise_for_status()
         return resp.json()
     except Exception as e:
-        # Return mock data for UI demo if Recall API fails
-        return {
-            "total_value_usd": 12456.78,
-            "change": "+2.34%",
-            "active_trades": 3,
-            "success_rate": "87.3%",
-            "ai_confidence": "94.7%"
-        } 
+        # Return empty data if Recall API fails
+        return {}
+
+def get_balances() -> dict:
+    portfolio = get_portfolio()
+    return portfolio.get('balances', {})
+
+def get_trading_history() -> list:
+    headers = {
+        "Authorization": f"Bearer {API_KEY}",
+        "Content-Type": "application/json"
+    }
+    # If Recall API exposes a trading history endpoint, use it here. Example:
+    TRADES_API_URL = f"{BASE_URL}/api/account/trades"
+    try:
+        resp = requests.get(TRADES_API_URL, headers=headers, timeout=30)
+        resp.raise_for_status()
+        return resp.json().get('trades', [])
+    except Exception as e:
+        return [] 
