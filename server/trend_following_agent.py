@@ -13,10 +13,16 @@ class TrendFollowingAgent:
     def __init__(self, gaia_api_key: str = None):
         self.gaia_api_key = gaia_api_key or "gaia-NzVjMDA0YmMtYjhkMi00NmRjLTg0ZTYtZTAzNGU0NjkwYzI5-9Qpnx3GHuvvNx-Uo"
         self.client = OpenAI(base_url="https://qwen72b.gaia.domains/v1", api_key=self.gaia_api_key)
+        # Expanded token address mapping (add more as needed)
         self.tokens = {
             "USDC": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
             "WETH": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
-            "WBTC": "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599"
+            "WBTC": "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599",
+            "USDT": "0xdAC17F958D2ee523a2206206994597C13D831ec7",
+            "DAI": "0x6B175474E89094C44Da98b954EedeAC495271d0F",
+            "LINK": "0x514910771AF9Ca656af840dff83E8264EcF986CA",
+            "UNI": "0x1f9840a85d5aF5bf1D1762F925BDADdC4201F984",
+            # Add more ERC-20 token addresses as needed
         }
         self.position_size = "100"
         self.trend_threshold = 0.02
@@ -67,7 +73,9 @@ class TrendFollowingAgent:
 
     def run_trend_analysis(self, symbols: list = None):
         if symbols is None:
-            symbols = ["ethereum", "bitcoin"]
+            symbols = [
+                "bitcoin", "ethereum", "usd-coin", "tether", "dai", "solana", "binancecoin", "matic-network", "avalanche-2", "arbitrum", "optimism", "chainlink", "uniswap"
+            ]
         results = []
         for symbol in symbols:
             trend_result = self.analyze_trend(symbol)

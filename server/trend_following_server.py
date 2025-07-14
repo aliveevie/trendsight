@@ -21,9 +21,14 @@ agent = TrendFollowingAgent()
 class TrendRequest(BaseModel):
     symbols: Optional[List[str]] = None
 
+# Professional, comprehensive default token list (bitcoin, ethereum, then major alts)
+DEFAULT_TOKENS = [
+    "bitcoin", "ethereum", "usd-coin", "tether", "dai", "solana", "binancecoin", "matic-network", "avalanche-2", "arbitrum", "optimism", "chainlink", "uniswap"
+]
+
 @app.post("/run-trend-analysis")
 def run_trend_analysis(request: TrendRequest):
-    symbols = request.symbols or ["ethereum", "bitcoin"]
+    symbols = request.symbols or DEFAULT_TOKENS
     trends = agent.run_trend_analysis(symbols)
     return {"trends": trends}
 
