@@ -13,23 +13,27 @@ class TrendFollowingAgent:
     def __init__(self, gaia_api_key: str = None):
         self.gaia_api_key = gaia_api_key or "gaia-NzVjMDA0YmMtYjhkMi00NmRjLTg0ZTYtZTAzNGU0NjkwYzI5-9Qpnx3GHuvvNx-Uo"
         self.client = OpenAI(base_url="https://qwen72b.gaia.domains/v1", api_key=self.gaia_api_key)
-        # Expanded token address mapping (add more as needed)
-        self.tokens = {
-            "USDC": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
-            "WETH": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
-            "WBTC": "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599",
-            "USDT": "0xdAC17F958D2ee523a2206206994597C13D831ec7",
-            "DAI": "0x6B175474E89094C44Da98b954EedeAC495271d0F",
-            "LINK": "0x514910771AF9Ca656af840dff83E8264EcF986CA",
-            "UNI": "0x1f9840a85d5aF5bf1D1762F925BDADdC4201F984",
-            # Add more ERC-20 token addresses as needed
+        # Supported tokens for trend analysis
+        self.tokens = [
+            "eth", "weth", "wbtc", "arbitrum", "optimism",
+        ]
+        # Mapping from token to CoinGecko ID
+        self.coingecko_ids = {
+            "eth": "ethereum",
+            "weth": "weth",
+            "wbtc": "wrapped-bitcoin",
+            "arbitrum": "arbitrum",
+            "optimism": "optimism",
         }
         self.position_size = "100"
         self.trend_threshold = 0.02
 
     def get_market_data(self, symbol: str, days: int = 7) -> dict:
+        coingecko_id = self.coingecko_ids.get(symbol)
+        if not coingecko_id:
+            return None
         try:
-            url = f"https://api.coingecko.com/api/v3/coins/{symbol}/market_chart"
+            url = f"https://api.coingecko.com/api/v3/coins/{coingecko_id}/market_chart"
             params = {"vs_currency": "usd", "days": days}
             response = requests.get(url, params=params, timeout=10)
             response.raise_for_status()
@@ -38,9 +42,29 @@ class TrendFollowingAgent:
             return None
 
     def analyze_trend(self, symbol: str) -> dict:
+        if symbol not in self.coingecko_ids:
+            return {
+                "symbol": symbol.upper(),
+                "name": symbol.capitalize(),
+                "price": 0,
+                "change": 0,
+                "trend": "neutral",
+                "confidence": 0,
+                "action": "HOLD",
+                "reason": "No native token or price data available for this network."
+            }
         market_data = self.get_market_data(symbol)
         if not market_data:
-            return {"symbol": symbol.upper(), "name": symbol.capitalize(), "price": 0, "change": 0, "trend": "neutral", "confidence": 0, "action": "HOLD", "reason": "No data available"}
+            return {
+                "symbol": symbol.upper(),
+                "name": symbol.capitalize(),
+                "price": 0,
+                "change": 0,
+                "trend": "neutral",
+                "confidence": 0,
+                "action": "HOLD",
+                "reason": "No data available"
+            }
         prices = [price[1] for price in market_data['prices']]
         current_price = prices[-1]
         week_ago_price = prices[0]
@@ -73,9 +97,7 @@ class TrendFollowingAgent:
 
     def run_trend_analysis(self, symbols: list = None):
         if symbols is None:
-            symbols = [
-                "bitcoin", "ethereum", "usd-coin", "tether", "dai", "solana", "binancecoin", "matic-network", "avalanche-2", "arbitrum", "optimism", "chainlink", "uniswap"
-            ]
+            symbols = self.tokens
         results = []
         for symbol in symbols:
             trend_result = self.analyze_trend(symbol)

@@ -12,7 +12,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:8080", "https://trendsight-server.onrender.com", "https://trendsight.vercel.app"],
     allow_credentials=True,
-    allow_methods=["*"] ,
+    allow_methods=["*"],
     allow_headers=["*"]
 )
 
@@ -21,9 +21,9 @@ agent = TrendFollowingAgent()
 class TrendRequest(BaseModel):
     symbols: Optional[List[str]] = None
 
-# Professional, comprehensive default token list (bitcoin, ethereum, then major alts)
+# Supported tokens for trend analysis (no stablecoins, only supported tokens)
 DEFAULT_TOKENS = [
-    "bitcoin", "ethereum", "usd-coin", "tether", "dai", "solana", "binancecoin", "matic-network", "avalanche-2", "arbitrum", "optimism", "chainlink", "uniswap"
+    "eth", "weth", "wbtc", "arbitrum", "optimism"
 ]
 
 @app.post("/run-trend-analysis")
