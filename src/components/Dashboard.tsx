@@ -5,6 +5,9 @@ import { AgentAvatar } from './AgentAvatar';
 import { TrendAnalysis } from './TrendAnalysis';
 import { Activity, DollarSign, TrendingUp, Users, Clock, CheckCircle, AlertCircle } from 'lucide-react';
 import { getDashboardStats } from '@/lib/api';
+import { Dialog, DialogTrigger, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
+import { executeTrade } from '@/lib/api';
+import { useToast } from '@/hooks/use-toast';
 
 export const Dashboard = () => {
   const [agentStatus, setAgentStatus] = useState<'idle' | 'analyzing' | 'trading' | 'complete'>('idle');
@@ -13,6 +16,11 @@ export const Dashboard = () => {
   const [portfolio, setPortfolio] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [tradeDialogOpen, setTradeDialogOpen] = useState(false);
+  const [tradeHistory, setTradeHistory] = useState<any[]>([]);
+  const [tradeInput, setTradeInput] = useState({ fromToken: '', toToken: '', amount: '100', reason: '' });
+  const [tradeLoading, setTradeLoading] = useState(false);
+  const { toast } = useToast();
 
   useEffect(() => {
     async function fetchStats() {
@@ -33,6 +41,10 @@ export const Dashboard = () => {
   // Example: extract total value (adjust as per actual API response)
   const totalValue = portfolio?.totalValueUSD || portfolio?.total_value_usd || 0;
 
+  // Fetch today's profit/earnings (example, adjust as per your API)
+  const todayProfit = portfolio?.todayProfit || portfolio?.today_profit || 0;
+  const todayEarnings = portfolio?.todayEarnings || portfolio?.today_earnings || 0;
+
   const stats = [
     {
       title: "Total Portfolio",
@@ -43,6 +55,21 @@ export const Dashboard = () => {
     },
     // You can add more stats here as your API provides them
   ];
+
+  stats.push({
+    title: "Today's Profit",
+    value: todayProfit ? `$${Number(todayProfit).toLocaleString(undefined, { minimumFractionDigits: 2 })}` : '--',
+    change: '',
+    positive: todayProfit >= 0,
+    icon: TrendingUp
+  });
+  stats.push({
+    title: "Today's Earnings",
+    value: todayEarnings ? `$${Number(todayEarnings).toLocaleString(undefined, { minimumFractionDigits: 2 })}` : '--',
+    change: '',
+    positive: todayEarnings >= 0,
+    icon: Users
+  });
 
   const recentActivity = [
     {
@@ -80,16 +107,68 @@ export const Dashboard = () => {
     setConfidence(confidenceLevel);
   };
 
+  // Handle trade execution
+  const handleTrade = async () => {
+    setTradeLoading(true);
+    try {
+      const result = await executeTrade(tradeInput);
+      setTradeHistory([{ ...tradeInput, result, time: new Date().toLocaleTimeString() }, ...tradeHistory]);
+      toast({ title: 'Trade Executed', description: 'Your trade was successful!' });
+      setTradeDialogOpen(false);
+    } catch (err) {
+      toast({ title: 'Trade Failed', description: (err as Error).message, variant: 'destructive' });
+    } finally {
+      setTradeLoading(false);
+    }
+  };
+
   return (
     <div className="space-y-6 p-6">
       {/* Header */}
       <div className="flex flex-col space-y-2">
-        <h1 className="text-3xl font-bold bg-gradient-primary bg-clip-text text-transparent">
-          Trading Dashboard
-        </h1>
-        <p className="text-muted-foreground">
-          Monitor your AI-powered crypto trading performance in real-time
-        </p>
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-3xl font-bold bg-gradient-primary bg-clip-text text-transparent">
+              Trading Dashboard
+            </h1>
+            <p className="text-muted-foreground">
+              Monitor your AI-powered crypto trading performance in real-time
+            </p>
+          </div>
+          <Dialog open={tradeDialogOpen} onOpenChange={setTradeDialogOpen}>
+            <DialogTrigger asChild>
+              <button className="bg-gradient-primary px-4 py-2 rounded text-white font-semibold shadow hover:opacity-90 transition-all">Trade</button>
+            </DialogTrigger>
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>AI Trading Assistant</DialogTitle>
+              </DialogHeader>
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-sm font-medium mb-1">From Token</label>
+                  <input type="text" className="input input-bordered w-full" value={tradeInput.fromToken} onChange={e => setTradeInput({ ...tradeInput, fromToken: e.target.value })} placeholder="e.g. eth" />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium mb-1">To Token</label>
+                  <input type="text" className="input input-bordered w-full" value={tradeInput.toToken} onChange={e => setTradeInput({ ...tradeInput, toToken: e.target.value })} placeholder="e.g. wbtc" />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium mb-1">Amount</label>
+                  <input type="number" className="input input-bordered w-full" value={tradeInput.amount} onChange={e => setTradeInput({ ...tradeInput, amount: e.target.value })} min="0" />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium mb-1">Reason (optional)</label>
+                  <input type="text" className="input input-bordered w-full" value={tradeInput.reason} onChange={e => setTradeInput({ ...tradeInput, reason: e.target.value })} placeholder="e.g. AI signal, trend, etc." />
+                </div>
+              </div>
+              <DialogFooter>
+                <button className="bg-gradient-primary px-4 py-2 rounded text-white font-semibold shadow hover:opacity-90 transition-all" onClick={handleTrade} disabled={tradeLoading}>
+                  {tradeLoading ? 'Trading...' : 'Execute Trade'}
+                </button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+        </div>
       </div>
 
       {/* Stats Grid */}
@@ -155,32 +234,37 @@ export const Dashboard = () => {
         </div>
       </div>
 
-      {/* Recent Activity (remains hardcoded for now) */}
+      {/* Recent Activity (AI Trading Feed) */}
       <Card className="border-primary/20 bg-card/50 backdrop-blur-sm shadow-card">
         <CardHeader>
           <CardTitle className="flex items-center space-x-2">
             <Clock className="h-5 w-5 text-primary" />
-            <span>Recent Activity</span>
+            <span>AI Trading Activity</span>
           </CardTitle>
         </CardHeader>
         <CardContent>
           <div className="space-y-3">
-            {/* You can make this dynamic as well if your API provides activity data */}
-            <div className="flex items-center justify-between p-3 rounded-lg border border-border bg-secondary/30 animate-fade-in">
-              <div className="flex items-center space-x-3">
-                <div className="w-8 h-8 bg-gradient-primary rounded-full flex items-center justify-center">
-                  <CheckCircle className="h-4 w-4 text-primary-foreground" />
+            {tradeHistory.length === 0 ? (
+              <div className="text-muted-foreground">No trades yet. Use the Trade button above to start trading!</div>
+            ) : (
+              tradeHistory.map((trade, idx) => (
+                <div key={idx} className="flex items-center justify-between p-3 rounded-lg border border-border bg-secondary/30 animate-fade-in">
+                  <div className="flex items-center space-x-3">
+                    <div className="w-8 h-8 bg-gradient-primary rounded-full flex items-center justify-center">
+                      <CheckCircle className="h-4 w-4 text-primary-foreground" />
+                    </div>
+                    <div>
+                      <p className="font-medium">{trade.fromToken} → {trade.toToken}</p>
+                      <p className="text-sm text-muted-foreground">{trade.amount} | {trade.reason}</p>
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <p className="font-semibold">{trade.result?.status || 'Success'}</p>
+                    <p className="text-sm text-muted-foreground">{trade.time}</p>
+                  </div>
                 </div>
-                <div>
-                  <p className="font-medium">Sample Activity</p>
-                  <p className="text-sm text-muted-foreground">$0.00</p>
-                </div>
-              </div>
-              <div className="text-right">
-                <p className="font-semibold">$0.00</p>
-                <p className="text-sm text-muted-foreground">Just now</p>
-              </div>
-            </div>
+              ))
+            )}
           </div>
         </CardContent>
       </Card>

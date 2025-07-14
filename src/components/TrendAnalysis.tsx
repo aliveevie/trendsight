@@ -4,7 +4,9 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
 import { TrendingUp, TrendingDown, Minus, RefreshCw, Bitcoin, Coins, ArrowUpRight, ArrowDownRight } from 'lucide-react';
-import { runTrendAnalysis } from '@/lib/api';
+import { runTrendAnalysis, executeTrade } from '@/lib/api';
+import { useToast } from '@/hooks/use-toast';
+import { Dialog, DialogTrigger, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 
 interface TrendData {
   symbol: string;
@@ -26,6 +28,10 @@ export const TrendAnalysis = ({ onStatusChange, onAnalysisUpdate }: TrendAnalysi
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [trends, setTrends] = useState<TrendData[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const { toast } = useToast();
+  const [tradeLoading, setTradeLoading] = useState<string | null>(null);
+  const [tradeDialogOpen, setTradeDialogOpen] = useState<string | null>(null);
+  const [tradeForm, setTradeForm] = useState<{ fromToken: string, toToken: string, side: 'buy' | 'sell' | '', amount: string, reason: string }>({ fromToken: '', toToken: '', side: '', amount: '', reason: '' });
 
   const handleRunAnalysis = async () => {
     setIsAnalyzing(true);
@@ -42,6 +48,43 @@ export const TrendAnalysis = ({ onStatusChange, onAnalysisUpdate }: TrendAnalysi
       onStatusChange('idle');
     } finally {
       setIsAnalyzing(false);
+    }
+  };
+
+  const openTradeDialog = (fromToken: string) => {
+    setTradeForm({ fromToken, toToken: '', side: '', amount: '', reason: '' });
+    setTradeDialogOpen(fromToken);
+  };
+
+  const handleTradeDialogChange = (field: string, value: string) => {
+    setTradeForm(prev => ({ ...prev, [field]: value }));
+    // Auto-set toToken based on side
+    if (field === 'side') {
+      setTradeForm(prev => ({
+        ...prev,
+        toToken: value === 'buy' ? fromTokenForBuy(prev.fromToken) : fromTokenForSell(prev.fromToken)
+      }));
+    }
+  };
+
+  const fromTokenForBuy = (fromToken: string) => fromToken === 'weth' ? 'wbtc' : 'weth';
+  const fromTokenForSell = (fromToken: string) => fromToken === 'weth' ? 'wbtc' : 'weth';
+
+  const handleTradeDialogSubmit = async () => {
+    setTradeLoading(tradeForm.fromToken);
+    try {
+      const result = await executeTrade({
+        fromToken: tradeForm.side === 'buy' ? tradeForm.toToken : tradeForm.fromToken,
+        toToken: tradeForm.side === 'buy' ? tradeForm.fromToken : tradeForm.toToken,
+        amount: tradeForm.amount,
+        reason: tradeForm.reason || 'AI chat trade'
+      });
+      toast({ title: 'Trade Executed', description: `Traded ${tradeForm.amount} ${tradeForm.fromToken.toUpperCase()} (${tradeForm.side})` });
+      setTradeDialogOpen(null);
+    } catch (err) {
+      toast({ title: 'Trade Failed', description: (err as Error).message, variant: 'destructive' });
+    } finally {
+      setTradeLoading(null);
     }
   };
 
@@ -109,20 +152,55 @@ export const TrendAnalysis = ({ onStatusChange, onAnalysisUpdate }: TrendAnalysi
                   <p className="text-sm text-muted-foreground">{trend.name}</p>
                 </div>
               </div>
-              <div className="text-right">
+              <div className="text-right flex flex-col items-end gap-2">
                 <p className="font-mono font-semibold">
                   ${trend.price.toLocaleString(undefined, { minimumFractionDigits: 2 })}
                 </p>
-                <div className="flex items-center space-x-1">
-                  {trend.change >= 0 ? (
-                    <ArrowUpRight className="h-3 w-3 text-success" />
-                  ) : (
-                    <ArrowDownRight className="h-3 w-3 text-destructive" />
-                  )}
-                  <span className={`text-sm ${trend.change >= 0 ? 'text-success' : 'text-destructive'}`}>
-                    {(trend.change * 100).toFixed(2)}%
-                  </span>
-                </div>
+                <Dialog open={tradeDialogOpen === trend.symbol.toLowerCase()} onOpenChange={open => setTradeDialogOpen(open ? trend.symbol.toLowerCase() : null)}>
+                  <DialogTrigger asChild>
+                    <Button
+                      size="sm"
+                      className="bg-gradient-primary text-white px-3 py-1 rounded shadow"
+                    >
+                      Trade
+                    </Button>
+                  </DialogTrigger>
+                  <DialogContent>
+                    <DialogHeader>
+                      <DialogTitle>AI Trading Assistant</DialogTitle>
+                    </DialogHeader>
+                    <div className="space-y-4">
+                      <div>
+                        <label className="block text-sm font-medium mb-1">Side</label>
+                        <select className="input input-bordered w-full" value={tradeForm.side} onChange={e => handleTradeDialogChange('side', e.target.value)}>
+                          <option value="">Select</option>
+                          <option value="buy">Buy</option>
+                          <option value="sell">Sell</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium mb-1">Amount</label>
+                        <input type="number" className="input input-bordered w-full" value={tradeForm.amount} onChange={e => handleTradeDialogChange('amount', e.target.value)} min="0" />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium mb-1">Reason (optional)</label>
+                        <input type="text" className="input input-bordered w-full" value={tradeForm.reason} onChange={e => handleTradeDialogChange('reason', e.target.value)} placeholder="e.g. AI signal, trend, etc." />
+                      </div>
+                      <div className="p-2 bg-muted/30 rounded text-sm">
+                        <strong>Summary:</strong> {tradeForm.side ? tradeForm.side.toUpperCase() : ''} {tradeForm.amount} {trend.symbol.toUpperCase()} {tradeForm.side === 'buy' ? '→' : '←'} {tradeForm.side === 'buy' ? fromTokenForBuy(trend.symbol.toLowerCase()).toUpperCase() : fromTokenForSell(trend.symbol.toLowerCase()).toUpperCase()}
+                      </div>
+                    </div>
+                    <DialogFooter>
+                      <Button
+                        className="bg-gradient-primary text-white px-4 py-2 rounded shadow"
+                        onClick={handleTradeDialogSubmit}
+                        disabled={tradeLoading === trend.symbol.toLowerCase() || !tradeForm.side || !tradeForm.amount}
+                      >
+                        {tradeLoading === trend.symbol.toLowerCase() ? 'Trading...' : 'Confirm Trade'}
+                      </Button>
+                    </DialogFooter>
+                  </DialogContent>
+                </Dialog>
               </div>
             </div>
             <div className="space-y-3">
