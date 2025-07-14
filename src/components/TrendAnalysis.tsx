@@ -1,10 +1,10 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
 import { TrendingUp, TrendingDown, Minus, RefreshCw, Bitcoin, Coins, ArrowUpRight, ArrowDownRight } from 'lucide-react';
-import { runTrendAnalysis, executeTrade } from '@/lib/api';
+import { runTrendAnalysis, executeTrade, getBalances, getTradingHistory } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
 import { Dialog, DialogTrigger, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 
@@ -32,6 +32,14 @@ export const TrendAnalysis = ({ onStatusChange, onAnalysisUpdate }: TrendAnalysi
   const [tradeLoading, setTradeLoading] = useState<string | null>(null);
   const [tradeDialogOpen, setTradeDialogOpen] = useState<string | null>(null);
   const [tradeForm, setTradeForm] = useState<{ fromToken: string, toToken: string, side: 'buy' | 'sell' | '', amount: string, reason: string }>({ fromToken: '', toToken: '', side: '', amount: '', reason: '' });
+  const [balances, setBalances] = useState<any>({});
+  const [history, setHistory] = useState<any[]>([]);
+
+  // Fetch balances and trading history on mount
+  useEffect(() => {
+    getBalances().then(data => setBalances(data.balances || {}));
+    getTradingHistory().then(data => setHistory(data.history || []));
+  }, []);
 
   const handleRunAnalysis = async () => {
     setIsAnalyzing(true);
@@ -170,6 +178,14 @@ export const TrendAnalysis = ({ onStatusChange, onAnalysisUpdate }: TrendAnalysi
                       <DialogTitle>AI Trading Assistant</DialogTitle>
                     </DialogHeader>
                     <div className="space-y-4">
+                      <div className="p-2 bg-muted/30 rounded text-sm">
+                        <strong>Your Balances:</strong>
+                        <ul className="mt-1 grid grid-cols-2 gap-2">
+                          {Object.entries(balances).map(([token, bal]) => (
+                            <li key={token} className="flex justify-between"><span>{token.toUpperCase()}</span><span>{bal}</span></li>
+                          ))}
+                        </ul>
+                      </div>
                       <div>
                         <label className="block text-sm font-medium mb-1">Side</label>
                         <select className="input input-bordered w-full" value={tradeForm.side} onChange={e => handleTradeDialogChange('side', e.target.value)}>
@@ -229,6 +245,22 @@ export const TrendAnalysis = ({ onStatusChange, onAnalysisUpdate }: TrendAnalysi
           </div>
         ))}
       </CardContent>
+      {/* Trading History Section */}
+      <div className="mt-8">
+        <h3 className="text-lg font-semibold mb-2">Trading History</h3>
+        {history.length === 0 ? (
+          <div className="text-muted-foreground">No trades yet.</div>
+        ) : (
+          <ul className="space-y-2">
+            {history.map((trade, idx) => (
+              <li key={idx} className="p-2 rounded bg-secondary/30 border border-border flex justify-between items-center">
+                <span>{trade.side ? trade.side.toUpperCase() : ''} {trade.amount} {trade.fromToken?.toUpperCase()} → {trade.toToken?.toUpperCase()}</span>
+                <span className="text-xs text-muted-foreground">{trade.timestamp || trade.time || ''}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
     </Card>
   );
 };

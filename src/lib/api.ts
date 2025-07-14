@@ -28,4 +28,16 @@ export async function executeTrade({ fromToken, toToken, amount, reason }: { fro
   });
   if (!res.ok) throw new Error('Failed to execute trade');
   return res.json();
+}
+
+export async function getBalances() {
+  const res = await fetch(`${BASE_URL}/balances`);
+  if (!res.ok) throw new Error('Failed to fetch balances');
+  return res.json();
+}
+
+export async function getTradingHistory() {
+  const res = await fetch(`${BASE_URL}/trading-history`);
+  if (!res.ok) throw new Error('Failed to fetch trading history');
+  return res.json();
 } 
