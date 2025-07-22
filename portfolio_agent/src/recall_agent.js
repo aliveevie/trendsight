@@ -57,21 +57,62 @@ const TOKENS = {
     symbol: "WETH",
     chain: "evm",
     decimals: 18
+  },
+  // Native chain tokens for multi-chain trading
+  ARB: {
+    address: "0x912CE59144191C1204E64559FE8253a0e49E6548",
+    symbol: "ARB",
+    chain: "evm",
+    decimals: 18,
+    chainSpecific: "arbitrum"
+  },
+  OP: {
+    address: "0x4200000000000000000000000000000000000042",
+    symbol: "OP",
+    chain: "evm",
+    decimals: 18,
+    chainSpecific: "optimism"
+  },
+  MATIC: {
+    address: "0x0000000000000000000000000000000000001010",
+    symbol: "MATIC",
+    chain: "evm",
+    decimals: 18,
+    chainSpecific: "polygon"
+  },
+  // Additional high-volume tokens for more trading opportunities
+  LINK: {
+    address: "0x514910771AF9Ca656af840dff83E8264EcF986CA",
+    symbol: "LINK",
+    chain: "evm",
+    decimals: 18
+  },
+  UNI: {
+    address: "0x1f9840a85d5aF5bf1D1762F925BDADdC4201F984",
+    symbol: "UNI",
+    chain: "evm",
+    decimals: 18
   }
 };
 
 const USDC_SYMBOLS = ["USDC", "USDbC"];
-const VOLATILE = ["SOL", "WETH"];
+const VOLATILE = ["SOL", "WETH", "ARB", "OP", "MATIC", "LINK", "UNI"]; // Expanded for multi-chain trading
 const POLL_INTERVAL = 60 * 1000;
-const MAX_POSITION = 0.4; // 40% max in any one token
+const MAX_POSITION = 0.25; // Reduced to 25% max for better diversification across more tokens
 const MIN_TRADE_USD = 50; // Minimum USD value for trades
 const MIN_TRADE_AMOUNTS = {
-  USDC: 10,    // 10 USDC minimum
-  SOL: 0.1,    // 0.1 SOL minimum  
-  WETH: 0.01   // 0.01 WETH minimum
+  USDC: 10,     // 10 USDC minimum
+  USDbC: 10,    // 10 USDbC minimum  
+  SOL: 0.1,     // 0.1 SOL minimum  
+  WETH: 0.01,   // 0.01 WETH minimum
+  ARB: 0.5,     // 0.5 ARB minimum (reduced for easier trading)
+  OP: 0.5,      // 0.5 OP minimum (reduced for easier trading)
+  MATIC: 5,     // 5 MATIC minimum (reduced from 10)
+  LINK: 0.3,    // 0.3 LINK minimum (reduced from 0.5)
+  UNI: 0.5      // 0.5 UNI minimum (reduced from 1)
 };
 const MOMENTUM_WINDOW = 5; // 5 cycles (minutes)
-const REBALANCE_INTERVAL = 60; // every 60 cycles (1 hour)
+const REBALANCE_INTERVAL = 30; // Reduced to 30 cycles for more active rebalancing
 
 if (!API_KEY) {
   console.error("Missing RECALL_SANDBOX_API_KEY in .env");
@@ -143,10 +184,16 @@ function getUsdcTokenForChain(chain) {
 
 
 async function executeTrade(fromTokenAddr, toTokenAddr, amount, reason, fromTokenObj, toTokenObj) {
-  // Validate minimum trade amount
+  // Validate minimum trade amount - check against the target token being bought/sold
   const amountNum = parseFloat(amount);
-  if (amountNum < MIN_TRADE_AMOUNTS[fromTokenObj.symbol]) {
-    console.warn(`[TRADE SKIP] Amount too small: ${amount} ${fromTokenObj.symbol} (min: ${MIN_TRADE_AMOUNTS[fromTokenObj.symbol]})`);
+  
+  // For selling: check against fromToken minimum (we're selling this token)
+  // For buying: check against toToken minimum (we're buying this token) 
+  const relevantToken = USDC_SYMBOLS.includes(fromTokenObj.symbol) ? toTokenObj : fromTokenObj;
+  const minAmount = MIN_TRADE_AMOUNTS[relevantToken.symbol];
+  
+  if (minAmount && amountNum < minAmount) {
+    console.warn(`[TRADE SKIP] Amount too small: ${amount} ${relevantToken.symbol} (min: ${minAmount})`);
     return { success: false, error: 'Amount too small' };
   }
 
@@ -284,111 +331,142 @@ async function main() {
       const usdcValue = flattenUSDC(tokens);
       updatePriceHistory(tokens);
       const alloc = getAllocations(tokens, totalValue);
-      // --- SELL LOGIC: Take profit on strong momentum or overweight ---
+      // --- AGGRESSIVE SELL LOGIC: Rapid profit taking and position management ---
       for (const t of tokens) {
         if (VOLATILE.includes(t.symbol) && t.amount > 0) {
           const price = await getTokenPrice(getTokenByAddress(t.token));
           if (!price) continue;
           const momentum = getMomentum(t.token);
-          // Take profit if up >2% in window or allocation > max
-          if ((momentum > 0.02 || alloc[t.symbol] > MAX_POSITION) && t.value > MIN_TRADE_USD && t.amount >= MIN_TRADE_AMOUNTS[t.symbol]) {
+          const currentAlloc = alloc[t.symbol] || 0;
+          
+          // Ultra-aggressive sell conditions for 24hr profit maximization
+          const shouldSell = (
+            momentum > 0.01 ||  // Take profit on even smaller gains (1% instead of 1.5%)
+            currentAlloc > MAX_POSITION * 0.8 ||  // Sell if over 80% of max position
+            (momentum < -0.003 && currentAlloc > MAX_POSITION * 0.3)  // Cut losses very fast
+          );
+          
+          if (shouldSell && t.value > MIN_TRADE_USD && t.amount >= MIN_TRADE_AMOUNTS[t.symbol]) {
             const usdcToken = getUsdcTokenForChain(t.chain);
-            console.log(`[DEBUG] ${t.symbol} sell check: amount=${t.amount}, min=${MIN_TRADE_AMOUNTS[t.symbol]}, value=${t.value}, momentum=${momentum}, alloc=${alloc[t.symbol]}`);
-            if (await canTrade(getTokenByAddress(t.token), usdcToken, t.amount)) {
+            
+            // Determine sell amount based on conditions - ultra-aggressive for 24hr
+            let sellAmount = t.amount;
+            if (momentum > 0.01 && currentAlloc < MAX_POSITION) {
+              sellAmount = t.amount * 0.7; // More aggressive partial profit taking
+            } else if (momentum < -0.003) {
+              sellAmount = t.amount * 0.9; // Very aggressive loss cutting
+            }
+            
+            console.log(`[AGGRESSIVE SELL] ${t.symbol}: momentum=${momentum.toFixed(4)}, alloc=${currentAlloc.toFixed(3)}, selling=${sellAmount.toFixed(4)}`);
+            
+            if (sellAmount >= MIN_TRADE_AMOUNTS[t.symbol] && await canTrade(getTokenByAddress(t.token), usdcToken, sellAmount)) {
+              const reason = momentum > 0.01 ? `Profit taking (${momentum.toFixed(3)})` : 
+                           momentum < -0.003 ? `Loss cutting (${momentum.toFixed(3)})` : 
+                           "Position rebalance";
+              
               await executeTrade(
                 t.token,
                 usdcToken.address,
-                t.amount,
-                momentum > 0.02 ? "Momentum profit taking" : "Rebalance overweight",
+                sellAmount,
+                reason,
                 getTokenByAddress(t.token),
                 usdcToken
               );
-              usdcGained += t.amount * price;
-              coinsSold.push(`${t.symbol} (${formatNum(t.amount)})`);
+              usdcGained += sellAmount * price;
+              coinsSold.push(`${t.symbol} (${formatNum(sellAmount)})`);
             } else {
-              console.log(`[SKIP] ${t.symbol} sell canTrade check failed`);
+              console.log(`[SKIP] ${t.symbol} sell validation failed: amount=${sellAmount}, min=${MIN_TRADE_AMOUNTS[t.symbol]}`);
             }
           } else {
-            console.log(`[SKIP] ${t.symbol} sell conditions not met: momentum=${momentum}, alloc=${alloc[t.symbol]}, value=${t.value}, amount=${t.amount}, min=${MIN_TRADE_AMOUNTS[t.symbol]}`);
+            console.log(`[SKIP] ${t.symbol} no sell signal: momentum=${momentum.toFixed(4)}, alloc=${currentAlloc.toFixed(3)}, value=${t.value.toFixed(2)}`);
           }
         }
       }
-      // --- BUY LOGIC: Buy dips or underweight, mean reversion ---
+      // --- AGGRESSIVE BUY LOGIC: Multi-token momentum and opportunity trading ---
       for (const sym of VOLATILE) {
-        const t = tokens.find(x => x.symbol === sym);
-        if (!t) continue;
-        const price = await getTokenPrice(getTokenByAddress(t.token));
-        if (!price) continue;
-        const momentum = getMomentum(t.token);
-        let buyUSD, buyAmount;
-
-        if (sym === "WETH") {
-          // Always try to buy at least 10 WETH if possible
-          buyAmount = Math.max(MIN_TRADE_AMOUNTS[sym], Math.min((MAX_POSITION - (alloc[sym] || 0)) * totalValue / price, usdcValue / price));
-          buyUSD = buyAmount * price;
-          if (buyAmount > usdcValue / price) {
-            buyAmount = usdcValue / price;
-            buyUSD = buyAmount * price;
-          }
-          console.log(`[FORCED BUY] WETH: Attempting to buy ${buyAmount} WETH (USD=${buyUSD})`);
-          if (buyAmount >= MIN_TRADE_AMOUNTS[sym] && buyUSD >= MIN_TRADE_USD) {
-            if (await canTrade(getUsdcTokenForChain(t.chain), getTokenByAddress(t.token), buyAmount)) {
-              await executeTrade(
-                getUsdcTokenForChain(t.chain).address,
-                t.token,
-                buyAmount,
-                "Forced minimum WETH buy for portfolio growth",
-                getUsdcTokenForChain(t.chain),
-                getTokenByAddress(t.token)
-              );
-              usdcSpent += buyUSD;
-              coinsBought.push(`${sym} (${formatNum(buyAmount)})`);
-            } else {
-              console.log(`[SKIP] WETH canTrade check failed for forced buy`);
-            }
-          } else {
-            console.log(`[SKIP] WETH forced buy: Not enough USDC or below minimum trade size. buyAmount=${buyAmount}, buyUSD=${buyUSD}`);
-          }
-          continue; // Skip normal logic for WETH
+        // Get token definition from TOKENS object, not just portfolio
+        const tokenObj = Object.values(TOKENS).find(token => token.symbol === sym);
+        if (!tokenObj) {
+          console.log(`[ERROR] Token definition not found for ${sym}`);
+          continue;
         }
-
-        // Normal buy logic for other tokens
-        if ((momentum < -0.02 || alloc[sym] < MAX_POSITION / 2) && usdcValue > MIN_TRADE_USD * 2) {
-          const usdcToken = getUsdcTokenForChain(t.chain);
-          buyUSD = Math.min(usdcValue * 0.25, MIN_TRADE_USD * 3, (MAX_POSITION - (alloc[sym] || 0)) * totalValue);
+        
+        // Check if token exists in current portfolio
+        const t = tokens.find(x => x.symbol === sym);
+        const price = await getTokenPrice(tokenObj);
+        if (!price) {
+          console.log(`[SKIP] ${sym} no price available`);
+          continue;
+        }
+        
+        const momentum = getMomentum(tokenObj.address);
+        const currentAlloc = alloc[sym] || 0;
+        
+        // Ultra-aggressive buying conditions for 24hr profit maximization
+        const shouldBuy = (
+          momentum < -0.005 ||  // Buy on very small dips (0.5%)
+          currentAlloc < MAX_POSITION * 0.9 ||  // Buy if under 90% of max position
+          (momentum > 0.005 && currentAlloc < MAX_POSITION * 0.7)  // Buy on small momentum if under 70% allocation
+        );
+        
+        if (shouldBuy && usdcValue > MIN_TRADE_USD) {
+          const usdcToken = getUsdcTokenForChain(tokenObj.chain);
+          // More aggressive position sizing
+          let buyUSD = Math.min(
+            usdcValue * 0.4,  // Use up to 40% of USDC per trade
+            (MAX_POSITION - currentAlloc) * totalValue,
+            MIN_TRADE_USD * 5  // Larger max trade size
+          );
+          
+          // Special aggressive logic for high-momentum tokens
+          if (momentum > 0.005) {
+            buyUSD = Math.min(buyUSD * 1.5, usdcValue * 0.6); // Extra aggressive on positive momentum
+            console.log(`[MOMENTUM BUY] ${sym}: Positive momentum ${momentum.toFixed(4)}, increasing buy size`);
+          }
+          
           if (buyUSD >= MIN_TRADE_USD) {
-            buyAmount = buyUSD / price;
-            console.log(`[DEBUG] ${sym} buy calculation: USD=${buyUSD}, Amount=${buyAmount}, Min=${MIN_TRADE_AMOUNTS[sym]}, PassesMin=${buyAmount >= MIN_TRADE_AMOUNTS[sym]}`);
-            // Ensure minimum amount in token units
-            if (buyAmount >= MIN_TRADE_AMOUNTS[sym] && await canTrade(usdcToken, getTokenByAddress(t.token), buyAmount)) {
+            const buyAmount = buyUSD / price;
+            console.log(`[AGGRESSIVE BUY] ${sym}: momentum=${momentum.toFixed(4)}, alloc=${currentAlloc.toFixed(3)}, buyUSD=${buyUSD.toFixed(2)}`);
+            
+            if (buyAmount >= MIN_TRADE_AMOUNTS[sym] && await canTrade(usdcToken, tokenObj, buyAmount)) {
+              const reason = momentum < -0.005 ? `Dip buy (${momentum.toFixed(3)})` : 
+                           momentum > 0.005 ? `Momentum follow (${momentum.toFixed(3)})` : 
+                           "Position building";
+              
               await executeTrade(
                 usdcToken.address,
-                t.token,
+                tokenObj.address,
                 buyAmount,
-                momentum < -0.02 ? "Mean reversion buy" : "Rebalance underweight",
+                reason,
                 usdcToken,
-                getTokenByAddress(t.token)
+                tokenObj
               );
               usdcSpent += buyUSD;
               coinsBought.push(`${sym} (${formatNum(buyAmount)})`);
             } else {
-              if (buyAmount < MIN_TRADE_AMOUNTS[sym]) {
-                console.log(`[SKIP] ${sym} amount too small: ${buyAmount} < ${MIN_TRADE_AMOUNTS[sym]}`);
-              } else {
-                console.log(`[SKIP] ${sym} canTrade check failed`);
-              }
+              console.log(`[SKIP] ${sym} trade validation failed: amount=${buyAmount}, min=${MIN_TRADE_AMOUNTS[sym]}`);
             }
-          } else {
-            console.log(`[SKIP] ${sym} USD amount too small: ${buyUSD} < ${MIN_TRADE_USD}`);
           }
         } else {
-          console.log(`[SKIP] ${sym} conditions not met: momentum=${momentum}, alloc=${alloc[sym]}, usdcValue=${usdcValue}`);
+          console.log(`[SKIP] ${sym} no buy signal: momentum=${momentum.toFixed(4)}, alloc=${currentAlloc.toFixed(3)}, usdcValue=${usdcValue.toFixed(2)}`);
         }
       }
-      // --- REBALANCE LOGIC: Every hour, rebalance to target allocation ---
+      // --- AGGRESSIVE REBALANCE LOGIC: Multi-token diversification for profit maximization ---
       if (cycleCount - lastRebalance >= REBALANCE_INTERVAL) {
         lastRebalance = cycleCount;
-        const targets = { USDC: 0.5, SOL: 0.25, WETH: 0.25 };
+        console.log(`\n⚖️ AGGRESSIVE REBALANCING PORTFOLIO (Cycle ${cycleCount}):`);
+        
+        // Aggressive multi-token allocation for 24hr profit maximization
+        const targets = { 
+          USDC: 0.30,   // Reduced USDC for more active trading
+          WETH: 0.20,   // ETH exposure
+          SOL: 0.20,    // Solana exposure
+          ARB: 0.10,    // Arbitrum native
+          OP: 0.10,     // Optimism native
+          MATIC: 0.05,  // Polygon native
+          LINK: 0.03,   // DeFi blue chip
+          UNI: 0.02     // DEX token
+        };
         for (const sym of Object.keys(targets)) {
           const curAlloc = alloc[sym] || 0;
           const target = targets[sym];
@@ -417,37 +495,43 @@ async function main() {
               console.log(`[SKIP] ${sym} rebalance sell conditions not met: value=${t?.value}, amount=${t?.amount * 0.5}, min=${MIN_TRADE_AMOUNTS[sym]}`);
             }
           } else if (curAlloc < target - 0.1 && sym !== "USDC" && usdcValue > MIN_TRADE_USD * 2) {
-            const t = tokens.find(x => x.symbol === sym);
-            if (t) {
-              const price = await getTokenPrice(getTokenByAddress(t.token));
-              if (!price) continue;
-              const usdcToken = getUsdcTokenForChain(t.chain);
+            // Get token definition from TOKENS object for rebalancing
+            const tokenObj = Object.values(TOKENS).find(token => token.symbol === sym);
+            if (tokenObj) {
+              const price = await getTokenPrice(tokenObj);
+              if (!price) {
+                console.log(`[SKIP] ${sym} rebalance buy: no price available`);
+                continue;
+              }
+              const usdcToken = getUsdcTokenForChain(tokenObj.chain);
               const buyUSD = Math.min((target - curAlloc) * totalValue, usdcValue * 0.3);
               if (buyUSD >= MIN_TRADE_USD) {
                 const buyAmount = buyUSD / price;
-                console.log(`[DEBUG] ${sym} rebalance buy: USD=${buyUSD}, amount=${buyAmount}, min=${MIN_TRADE_AMOUNTS[sym]}, curAlloc=${curAlloc}, target=${target}`);
+                console.log(`[REBALANCE BUY] ${sym}: USD=${buyUSD.toFixed(2)}, amount=${buyAmount.toFixed(4)}, curAlloc=${(curAlloc * 100).toFixed(1)}%, target=${(target * 100).toFixed(1)}%`);
                 // Ensure minimum amount in token units
-                if (buyAmount >= MIN_TRADE_AMOUNTS[sym] && await canTrade(usdcToken, getTokenByAddress(t.token), buyAmount)) {
+                if (buyAmount >= MIN_TRADE_AMOUNTS[sym] && await canTrade(usdcToken, tokenObj, buyAmount)) {
                   await executeTrade(
                     usdcToken.address,
-                    t.token,
+                    tokenObj.address,
                     buyAmount,
-                    "Rebalance deficit",
+                    `Rebalance to ${(target * 100).toFixed(1)}%`,
                     usdcToken,
-                    getTokenByAddress(t.token)
+                    tokenObj
                   );
                   usdcSpent += buyUSD;
                   coinsBought.push(`${sym} (rebalance)`);
                 } else {
                   if (buyAmount < MIN_TRADE_AMOUNTS[sym]) {
-                    console.log(`[SKIP] ${sym} rebalance buy amount too small: ${buyAmount} < ${MIN_TRADE_AMOUNTS[sym]}`);
+                    console.log(`[SKIP] ${sym} rebalance buy amount too small: ${buyAmount.toFixed(4)} < ${MIN_TRADE_AMOUNTS[sym]}`);
                   } else {
                     console.log(`[SKIP] ${sym} rebalance buy canTrade check failed`);
                   }
                 }
               } else {
-                console.log(`[SKIP] ${sym} rebalance buy USD too small: ${buyUSD} < ${MIN_TRADE_USD}`);
+                console.log(`[SKIP] ${sym} rebalance buy USD too small: ${buyUSD.toFixed(2)} < ${MIN_TRADE_USD}`);
               }
+            } else {
+              console.log(`[ERROR] ${sym} token definition not found for rebalancing`);
             }
           } else {
             console.log(`[SKIP] ${sym} rebalance conditions not met: curAlloc=${curAlloc}, target=${target}, usdcValue=${usdcValue}`);
@@ -458,14 +542,31 @@ async function main() {
       const profit = totalValue - lastTotalValue;
       cumulativeProfit += profit;
       lastTotalValue = totalValue;
-      // --- LOGGING ---
-      console.log(`\nCycle ${cycleCount} | ${new Date().toLocaleTimeString()}`);
-      console.log(`Portfolio Value: $${formatNum(totalValue)}`);
-      console.log(`USDC: $${formatNum(usdcValue)}`);
-      console.log(`Coins Bought: ${coinsBought.length ? coinsBought.join(', ') : 'None'}`);
-      console.log(`Coins Sold: ${coinsSold.length ? coinsSold.join(', ') : 'None'}`);
-      console.log(`USDC Spent: $${formatNum(usdcSpent)} | USDC Gained: $${formatNum(usdcGained)}`);
-      console.log(`Cycle Profit: $${formatNum(profit)} | Cumulative Profit: $${formatNum(cumulativeProfit)}`);
+      // --- COMPREHENSIVE LOGGING ---
+      console.log(`\n🚀 AGGRESSIVE MULTI-CHAIN CYCLE ${cycleCount} | ${new Date().toLocaleString()}`);
+      console.log(`💰 Portfolio Value: $${formatNum(totalValue)} | USDC Available: $${formatNum(usdcValue)}`);
+      
+      // Show current allocations across all tokens
+      console.log(`📊 Current Allocations:`);
+      for (const sym of VOLATILE) {
+        const allocation = alloc[sym] || 0;
+        const tokenData = tokens.find(t => t.symbol === sym);
+        const value = (allocation * totalValue) || 0;
+        const amount = tokenData?.amount || 0;
+        
+        // Show all VOLATILE tokens to track diversification progress
+        console.log(`   ${sym}: ${(allocation * 100).toFixed(1)}% ($${formatNum(value)}) [${amount > 0 ? formatNum(amount) : '0'} tokens]`);
+      }
+      
+      console.log(`🔄 Trading Activity:`);
+      console.log(`   Bought: ${coinsBought.length ? coinsBought.join(', ') : 'None'}`);
+      console.log(`   Sold: ${coinsSold.length ? coinsSold.join(', ') : 'None'}`);
+      console.log(`   Capital Flow: -$${formatNum(usdcSpent)} spent | +$${formatNum(usdcGained)} gained | Net: $${formatNum(usdcGained - usdcSpent)}`);
+      
+      console.log(`📈 Performance:`);
+      console.log(`   Cycle Profit: $${formatNum(profit)} | Cumulative Profit: $${formatNum(cumulativeProfit)}`);
+      console.log(`   Total Return: ${((totalValue / initialTotalValue - 1) * 100).toFixed(2)}%`);
+      console.log(`   Profit Rate: $${formatNum(cumulativeProfit / cycleCount)} per cycle`);
     } catch (error) {
       console.error(`[ERROR] Cycle ${cycleCount}: ${error.message}`);
       console.error(`[ERROR] Stack trace:`, error.stack);
