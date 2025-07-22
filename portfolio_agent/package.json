@@ -1,6 +1,7 @@
 {
   "name": "portfolio_agent",
   "version": "1.0.0",
+  "type": "module",
   "description": "A self-rebalancing portfolio manager that runs on Recall Network, maintains target allocations, and optionally uses OpenAI to tune weights over time.",
   "main": "index.js",
   "scripts": {
@@ -8,5 +9,8 @@
   },
   "keywords": [],
   "author": "",
-  "license": "ISC"
+  "license": "ISC",
+  "dependencies": {
+    "dotenv": "^17.2.0"
+  }
 }
