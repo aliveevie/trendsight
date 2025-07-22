@@ -5,10 +5,10 @@
   "description": "An automated spot trading agent for Recall Network sandbox with real-time price monitoring and profit optimization",
   "main": "src/agent.js",
   "scripts": {
-    "start": "node src/agent.js",
-    "dev": "node --watch src/agent.js",
-    "test": "node src/test.js",
-    "dashboard": "node src/dashboard.js"
+    "start": "node src/recall_agent.js",
+    "gaia": "node src/gaia.js",
+    "dev": "node src/recall_agent.js",
+    "test": "jest"
   },
   "keywords": ["trading", "automation", "recall", "crypto"],
   "author": "",
