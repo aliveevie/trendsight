@@ -2,9 +2,9 @@ import dotenv from "dotenv";
 import path from "path";
 dotenv.config({ path: path.resolve(process.cwd(), '../.env') });
 
-console.log("⏳  Submitting trade to Recall sandbox …");
+console.log("⏳  Submitting Ethereum trade to Recall sandbox …");
 
-// Using Solana tokens as per documentation
+// Using Ethereum tokens (matching the working Python configuration)
 fetch("https://api.sandbox.competitions.recall.network/api/trade/execute", {
     method: "POST",
     headers: {
@@ -12,15 +12,10 @@ fetch("https://api.sandbox.competitions.recall.network/api/trade/execute", {
       "Content-Type": "application/json"
     },
     body: JSON.stringify({
-      "fromToken": "So11111111111111111111111111111111111111112", // SOL
-      "toToken": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", // USDC
-      "amount": "1.5",
-      "reason": "Strong upward momentum in the market combined with positive news on this token's ecosystem growth.",
-      "slippageTolerance": "0.5",
-      "fromChain": "svm",
-      "fromSpecificChain": "mainnet",
-      "toChain": "svm",
-      "toSpecificChain": "mainnet"
+      "fromToken": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", // USDC
+      "toToken": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2", // WETH
+      "amount": "100",
+      "reason": "Quick-start verification trade"
     })
   })
   .then(res => {
@@ -45,4 +40,4 @@ fetch("https://api.sandbox.competitions.recall.network/api/trade/execute", {
   })
   .catch(error => {
     console.log("❌  Error:", error.message);
-  });
+  }); 
