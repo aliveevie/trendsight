@@ -9,7 +9,7 @@ const GAIA_API_KEY = process.env.GAIA_API_KEY || "gaia-NzVjMDA0YmMtYjhkMi00NmRjL
 const RECALL_API_KEY = process.env.RECALL_SANDBOX_API_KEY;
 const BASE_URL = "https://api.sandbox.competitions.recall.network/api";
 
-// Token addresses for Gaia agent (focusing on major tokens)
+// Token addresses and symbols from snapshot - SAME AS recall_agent.js
 const TOKENS = {
   USDC_ETH: {
     address: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
@@ -17,44 +17,92 @@ const TOKENS = {
     chain: "evm",
     decimals: 6
   },
+  USDC_POLYGON: {
+    address: "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
+    symbol: "USDC",
+    chain: "evm",
+    decimals: 6
+  },
+  USDbC: {
+    address: "0xd9aAEc86B65D86f6A7B5B1b0c42FFA531710b6CA",
+    symbol: "USDbC",
+    chain: "evm",
+    decimals: 6
+  },
+  USDC_ARB: {
+    address: "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+    symbol: "USDC",
+    chain: "evm",
+    decimals: 6
+  },
+  USDC_OPTIMISM: {
+    address: "0x7f5c764cbc14f9669b88837ca1490cca17c31607",
+    symbol: "USDC",
+    chain: "evm",
+    decimals: 6
+  },
+  SOL: {
+    address: "So11111111111111111111111111111111111111112",
+    symbol: "SOL",
+    chain: "svm",
+    decimals: 9
+  },
+  USDC_SOL: {
+    address: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+    symbol: "USDC",
+    chain: "svm",
+    decimals: 6
+  },
   WETH: {
     address: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
     symbol: "WETH",
     chain: "evm",
     decimals: 18
-  },
-  WBTC: {
-    address: "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599",
-    symbol: "WBTC",
-    chain: "evm",
-    decimals: 8
-  },
-  ARBITRUM: {
-    address: "0x912CE59144191C1204E64559FE8253a0e49E6548",
-    symbol: "ARB",
-    chain: "evm",
-    decimals: 18
-  },
-  OPTIMISM: {
-    address: "0x4200000000000000000000000000000000000042",
-    symbol: "OP",
-    chain: "evm",
-    decimals: 18
   }
 };
 
-// Gaia agent configuration
-const TREND_TOKENS = ["WETH", "WBTC", "ARB", "OP"];
-const USDC_SYMBOLS = ["USDC"];
+// Add native chain tokens for trading
+const CHAIN_TOKENS = {
+  ARB: {
+    address: "0x912CE59144191C1204E64559FE8253a0e49E6548",
+    symbol: "ARB",
+    chain: "evm",
+    decimals: 18,
+    chainSpecific: "arbitrum"
+  },
+  OP: {
+    address: "0x4200000000000000000000000000000000000042",
+    symbol: "OP", 
+    chain: "evm",
+    decimals: 18,
+    chainSpecific: "optimism"
+  },
+  MATIC: {
+    address: "0x0000000000000000000000000000000000001010",
+    symbol: "MATIC",
+    chain: "evm", 
+    decimals: 18,
+    chainSpecific: "polygon"
+  }
+};
+
+// Combine all tokens
+const ALL_TOKENS = { ...TOKENS, ...CHAIN_TOKENS };
+
+// Gaia agent configuration - updated to use same tokens as recall_agent
+const TREND_TOKENS = ["SOL", "WETH", "USDbC", "ARB", "OP"]; // Focus on volatile tokens
+const USDC_SYMBOLS = ["USDC", "USDbC"];
+const VOLATILE = ["SOL", "WETH", "ARB", "OP"];
 const POLL_INTERVAL = 60 * 1000;
 const MAX_POSITION = 0.3; // 30% max in any one token
 const MIN_TRADE_USD = 50;
 const MIN_TRADE_AMOUNTS = {
-  USDC: 10,
-  WETH: 0.01,
-  WBTC: 0.001,
-  ARB: 1,
-  OP: 1
+  USDC: 10,    // 10 USDC minimum
+  USDbC: 10,   // 10 USDbC minimum
+  SOL: 0.1,    // 0.1 SOL minimum  
+  WETH: 0.01,  // 0.01 WETH minimum
+  ARB: 1,      // 1 ARB minimum
+  OP: 1        // 1 OP minimum
 };
 const TREND_THRESHOLD = 0.02; // 2% trend threshold
 const MOMENTUM_WINDOW = 5;
@@ -170,20 +218,27 @@ function getTotalPortfolioValue(tokens) {
 }
 
 function getTokenByAddress(address) {
-  return Object.values(TOKENS).find(t => t.address === address);
+  return Object.values(ALL_TOKENS).find(t => t.address === address);
 }
 
 function getUsdcTokenForChain(chain) {
-  return TOKENS.USDC_ETH; // Always use Ethereum USDC
+  // Return the appropriate USDC token for the given chain
+  if (chain === 'svm') {
+    return ALL_TOKENS.USDC_SOL; // Use Solana USDC for SVM chains
+  }
+  // For EVM chains, use Ethereum USDC as default
+  return ALL_TOKENS.USDC_ETH;
 }
 
 async function executeTrade(fromTokenAddr, toTokenAddr, amount, reason, fromTokenObj, toTokenObj) {
+  // Validate minimum trade amount
   const amountNum = parseFloat(amount);
   if (amountNum < MIN_TRADE_AMOUNTS[fromTokenObj.symbol]) {
     console.warn(`[TRADE SKIP] Amount too small: ${amount} ${fromTokenObj.symbol} (min: ${MIN_TRADE_AMOUNTS[fromTokenObj.symbol]})`);
     return { success: false, error: 'Amount too small' };
   }
 
+  // Build trade data based on token chains
   const tradeData = {
     fromToken: fromTokenAddr,
     toToken: toTokenAddr,
@@ -191,6 +246,16 @@ async function executeTrade(fromTokenAddr, toTokenAddr, amount, reason, fromToke
     reason,
     slippageTolerance: "0.5"
   };
+
+  // Only add chain specifications for Solana tokens
+  if (fromTokenObj.chain === 'svm') {
+    tradeData.fromChain = "svm";
+    tradeData.fromSpecificChain = "mainnet";
+  }
+  if (toTokenObj.chain === 'svm') {
+    tradeData.toChain = "svm";
+    tradeData.toSpecificChain = "mainnet";
+  }
 
   console.log(`[TRADE ATTEMPT] ${fromTokenObj.symbol} -> ${toTokenObj.symbol}`, tradeData);
   try {
@@ -321,7 +386,7 @@ async function main() {
       
       for (const symbol of TREND_TOKENS) {
         const analysis = trendAnalysis[symbol];
-        const tokenObj = Object.values(TOKENS).find(t => t.symbol === symbol);
+        const tokenObj = Object.values(ALL_TOKENS).find(t => t.symbol === symbol);
         if (!tokenObj) continue;
 
         const price = await getTokenPrice(tokenObj);
@@ -377,11 +442,11 @@ async function main() {
         lastRebalance = cycleCount;
         console.log(`\n⚖️ REBALANCING PORTFOLIO:`);
         
-        const targets = { USDC: 0.4, WETH: 0.2, WBTC: 0.2, ARB: 0.1, OP: 0.1 };
+        const targets = { USDC: 0.5, WETH: 0.25, SOL: 0.15, ARB: 0.05, OP: 0.05 };
         for (const sym of Object.keys(targets)) {
           const curAlloc = alloc[sym] || 0;
           const target = targets[sym];
-          const tokenObj = Object.values(TOKENS).find(t => t.symbol === sym);
+          const tokenObj = Object.values(ALL_TOKENS).find(t => t.symbol === sym);
           
           if (!tokenObj) continue;
           
