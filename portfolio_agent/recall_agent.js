@@ -90,10 +90,15 @@ async function getPortfolio() {
 async function getTokenPrice(tokenObj) {
   try {
     const params = {
-      token: tokenObj.address,
-      chain: tokenObj.chain,
-      specificChain: tokenObj.chain === 'evm' ? 'eth' : 'svm'
+      token: tokenObj.address
     };
+
+    // Only add chain specifications for Solana tokens
+    if (tokenObj.chain === 'svm') {
+      params.chain = "svm";
+      params.specificChain = "mainnet";
+    }
+
     const res = await api.get('/price', { params });
     if (res.data && res.data.success && typeof res.data.price === 'number') {
       return res.data.price;
@@ -124,37 +129,48 @@ function getUsdcTokenForChain(chain) {
   return Object.values(TOKENS).find(tok => USDC_SYMBOLS.includes(tok.symbol) && tok.chain === chain);
 }
 
-function getChainAndSpecific(token) {
-  return {
-    chain: token.chain,
-    specific: 'mainnet'
-  };
-}
+
 
 async function executeTrade(fromTokenAddr, toTokenAddr, amount, reason, fromTokenObj, toTokenObj) {
-  const fromChainInfo = getChainAndSpecific(fromTokenObj);
-  const toChainInfo = getChainAndSpecific(toTokenObj);
+  // Build trade data based on token chains
   const tradeData = {
     fromToken: fromTokenAddr,
     toToken: toTokenAddr,
     amount: amount.toString(),
     reason,
-    slippageTolerance: "0.5",
-    fromChain: fromChainInfo.chain,
-    fromSpecificChain: fromChainInfo.specific,
-    toChain: toChainInfo.chain,
-    toSpecificChain: toChainInfo.specific
+    slippageTolerance: "0.5"
   };
-  console.log(`[TRADE ATTEMPT]`, tradeData);
+
+  // Only add chain specifications for Solana tokens
+  if (fromTokenObj.chain === 'svm') {
+    tradeData.fromChain = "svm";
+    tradeData.fromSpecificChain = "mainnet";
+  }
+  if (toTokenObj.chain === 'svm') {
+    tradeData.toChain = "svm";
+    tradeData.toSpecificChain = "mainnet";
+  }
+
+  console.log(`[TRADE ATTEMPT] ${fromTokenObj.symbol} -> ${toTokenObj.symbol}`, tradeData);
   try {
     const res = await api.post("/trade/execute", tradeData);
+    if (res.data && res.data.success) {
+      console.log(`✅ [TRADE SUCCESS] ${fromTokenObj.symbol} -> ${toTokenObj.symbol}:`, {
+        fromAmount: res.data.transaction?.fromAmount,
+        toAmount: res.data.transaction?.toAmount,
+        tradeValue: res.data.transaction?.tradeAmountUsd,
+        transactionId: res.data.transaction?.id
+      });
+    } else {
+      console.error(`❌ [TRADE FAILED] ${fromTokenObj.symbol} -> ${toTokenObj.symbol}:`, res.data?.error || 'Unknown error');
+    }
     return res.data;
   } catch (error) {
     if (error.response) {
-      console.error(`[TRADE ERROR] Status: ${error.response.status}`);
-      console.error(`[TRADE ERROR] Data:`, error.response.data);
+      console.error(`❌ [TRADE ERROR] ${fromTokenObj.symbol} -> ${toTokenObj.symbol} Status: ${error.response.status}`);
+      console.error(`❌ [TRADE ERROR] Data:`, error.response.data);
     } else {
-      console.error(`[TRADE ERROR]`, error.message);
+      console.error(`❌ [TRADE ERROR] ${fromTokenObj.symbol} -> ${toTokenObj.symbol}:`, error.message);
     }
     throw error;
   }
@@ -168,17 +184,25 @@ async function canTrade(fromTokenObj, toTokenObj, amount) {
     console.warn(`[TRADE SKIP] No price for pair: ${fromTokenObj.symbol} -> ${toTokenObj.symbol}`);
     return false;
   }
+  
   // Check trade quote
   try {
     const params = {
       fromToken: fromTokenObj.address,
       toToken: toTokenObj.address,
-      amount: amount.toString(),
-      fromChain: fromTokenObj.chain,
-      fromSpecificChain: fromTokenObj.chain === 'evm' ? 'eth' : 'svm',
-      toChain: toTokenObj.chain,
-      toSpecificChain: toTokenObj.chain === 'evm' ? 'eth' : 'svm'
+      amount: amount.toString()
     };
+
+    // Only add chain specifications for Solana tokens
+    if (fromTokenObj.chain === 'svm') {
+      params.fromChain = "svm";
+      params.fromSpecificChain = "mainnet";
+    }
+    if (toTokenObj.chain === 'svm') {
+      params.toChain = "svm";
+      params.toSpecificChain = "mainnet";
+    }
+
     const res = await api.get('/trade/quote', { params });
     if (res.data && res.data.fromAmount > 0 && res.data.toAmount > 0) {
       return true;
