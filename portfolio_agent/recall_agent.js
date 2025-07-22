@@ -62,6 +62,8 @@ const TOKENS = {
 
 const USDC_SYMBOLS = ["USDC", "USDbC"];
 const PROFIT_THRESHOLD = 0.005; // 0.5%
+const BUY_THRESHOLD = -0.02; // -2% (buy when price drops)
+const REINVESTMENT_PERCENTAGE = 0.1; // 10% of USDC for reinvestment
 const POLL_INTERVAL = 60 * 1000; // 1 minute
 
 if (!API_KEY) {
@@ -84,62 +86,146 @@ async function getPortfolio() {
 }
 
 function flattenUSDC(tokens) {
-  // Sum all USDC and USDbC tokens
-  return tokens.filter(t => USDC_SYMBOLS.includes(t.symbol)).reduce((sum, t) => sum + t.value, 0);
+  return tokens.filter(t => USDC_SYMBOLS.includes(t.symbol)).reduce((sum, t) => sum + (Number(t.value) || 0), 0);
+}
+
+function getTotalPortfolioValue(tokens) {
+  return tokens.reduce((sum, t) => sum + (Number(t.value) || 0), 0);
 }
 
 async function executeTrade({ token, side, amount }) {
   const body = {
     tokenAddress: token.address,
     amount: amount.toString(),
-    side, // 'buy' or 'sell'
+    side,
   };
   const res = await api.post("/trade/execute", body);
   return res.data;
 }
 
 function findOpportunities(snapshot, current) {
-  const ops = [];
+  const sellOps = [];
+  const buyOps = [];
+  
   for (const key in TOKENS) {
     if (USDC_SYMBOLS.includes(TOKENS[key].symbol)) continue;
+    
     const snap = snapshot.find(t => t.token === TOKENS[key].address);
     const curr = current.find(t => t.token === TOKENS[key].address);
+    
     if (!snap || !curr) continue;
-    const change = (curr.price - snap.price) / snap.price;
+    
+    const change = snap.price ? (curr.price - snap.price) / snap.price : 0;
+    
+    // Sell opportunity: price increased by threshold
     if (change >= PROFIT_THRESHOLD && curr.amount > 0) {
-      ops.push({ token: TOKENS[key], side: "sell", amount: curr.amount, price: curr.price, change });
+      sellOps.push({ 
+        token: TOKENS[key], 
+        side: "sell", 
+        amount: curr.amount, 
+        price: curr.price, 
+        change,
+        value: curr.value
+      });
+    }
+    
+    // Buy opportunity: price dropped significantly
+    if (change <= BUY_THRESHOLD) {
+      buyOps.push({ 
+        token: TOKENS[key], 
+        side: "buy", 
+        price: curr.price, 
+        change,
+        targetPrice: snap.price
+      });
     }
   }
-  return ops;
+  
+  return { sellOps, buyOps };
+}
+
+function calculateReinvestmentAmount(usdcTotal, buyOps) {
+  if (buyOps.length === 0) return 0;
+  
+  const reinvestmentAmount = usdcTotal * REINVESTMENT_PERCENTAGE;
+  const amountPerToken = reinvestmentAmount / buyOps.length;
+  
+  return Math.min(amountPerToken, usdcTotal * 0.05); // Max 5% per token
+}
+
+function formatNum(n) {
+  return Number(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
 async function main() {
-  // Initial snapshot
   const initialPortfolio = await getPortfolio();
   const snapshotTokens = initialPortfolio.tokens;
   const snapshotTime = initialPortfolio.snapshotTime;
-  console.log(`Initial snapshot taken at ${snapshotTime}`);
+  const initialUSDC = flattenUSDC(snapshotTokens);
+  const initialTotalValue = getTotalPortfolioValue(snapshotTokens);
+  let cumulativeProfit = 0;
+  let cycleCount = 0;
 
   while (true) {
+    cycleCount++;
+    const cycleStart = new Date();
+    let usdcSpent = 0;
+    let usdcGained = 0;
+    let coinsBought = [];
+    let coinsSold = [];
     try {
       const portfolio = await getPortfolio();
       const currentTokens = portfolio.tokens;
-      const ops = findOpportunities(snapshotTokens, currentTokens);
-      for (const op of ops) {
-        // Sell all profitable tokens back to USDC
+      const currentUSDC = flattenUSDC(currentTokens);
+      const currentTotalValue = getTotalPortfolioValue(currentTokens);
+      const { sellOps, buyOps } = findOpportunities(snapshotTokens, currentTokens);
+
+      // Sells
+      for (const op of sellOps) {
         const minAmount = 10 ** -op.token.decimals;
         if (op.amount > minAmount) {
-          const trade = await executeTrade({ token: op.token, side: "sell", amount: op.amount });
-          console.log(`[TRADE] Sold ${op.amount} ${op.token.symbol} at $${op.price} (+${(op.change*100).toFixed(2)}%)`);
+          try {
+            await executeTrade({ token: op.token, side: "sell", amount: op.amount });
+            usdcGained += Number(op.value) || 0;
+            coinsSold.push(`${op.token.symbol} (${formatNum(op.amount)})`);
+          } catch (error) {}
         }
       }
-      // Calculate total USDC (all variants)
-      const usdcTotal = flattenUSDC(currentTokens);
-      console.log(`[INFO] USDC (all) balance: ${usdcTotal}`);
-    } catch (e) {
-      console.error("[ERROR]", e.message);
+      // Buys
+      if (buyOps.length > 0 && currentUSDC > 100) {
+        const reinvestAmount = calculateReinvestmentAmount(currentUSDC, buyOps);
+        for (const op of buyOps) {
+          if (reinvestAmount > 10) {
+            const buyAmount = reinvestAmount / op.price;
+            try {
+              await executeTrade({ token: op.token, side: "buy", amount: buyAmount });
+              usdcSpent += reinvestAmount;
+              coinsBought.push(`${op.token.symbol} (${formatNum(buyAmount)})`);
+            } catch (error) {}
+          }
+        }
+      }
+      // Profit calculation
+      const usdcChange = currentUSDC - initialUSDC;
+      const totalValueChange = currentTotalValue - initialTotalValue;
+      cumulativeProfit += usdcGained - usdcSpent;
+      const usdcChangePercent = initialUSDC ? (usdcChange / initialUSDC) * 100 : 0;
+      const totalValueChangePercent = initialTotalValue ? (totalValueChange / initialTotalValue) * 100 : 0;
+      const cycleEnd = new Date();
+      const cycleDuration = cycleEnd - cycleStart;
+      // Log summary
+      console.log(`\nCycle ${cycleCount} | ${cycleEnd.toLocaleTimeString()}`);
+      console.log(`USDC: $${formatNum(currentUSDC)} (${usdcChange >= 0 ? '+' : ''}${formatNum(usdcChange)}, ${usdcChangePercent >= 0 ? '+' : ''}${formatNum(usdcChangePercent)}%)`);
+      console.log(`Total Value: $${formatNum(currentTotalValue)} (${totalValueChange >= 0 ? '+' : ''}${formatNum(totalValueChange)}, ${totalValueChangePercent >= 0 ? '+' : ''}${formatNum(totalValueChangePercent)}%)`);
+      console.log(`Coins Bought: ${coinsBought.length ? coinsBought.join(', ') : 'None'}`);
+      console.log(`Coins Sold: ${coinsSold.length ? coinsSold.join(', ') : 'None'}`);
+      console.log(`USDC Spent: $${formatNum(usdcSpent)} | USDC Gained: $${formatNum(usdcGained)}`);
+      console.log(`Cumulative Profit: $${formatNum(cumulativeProfit)}`);
+      console.log(`Cycle Duration: ${cycleDuration}ms`);
+    } catch (error) {
+      console.error(`[ERROR] Cycle ${cycleCount}: ${error.message}`);
     }
-    await new Promise(r => setTimeout(r, POLL_INTERVAL));
+    await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL));
   }
 }
 
