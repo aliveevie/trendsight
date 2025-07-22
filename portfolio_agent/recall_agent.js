@@ -61,10 +61,12 @@ const TOKENS = {
 };
 
 const USDC_SYMBOLS = ["USDC", "USDbC"];
-const PROFIT_THRESHOLD = 0.005; // 0.5%
-const BUY_THRESHOLD = -0.02; // -2% (buy when price drops)
-const REINVESTMENT_PERCENTAGE = 0.1; // 10% of USDC for reinvestment
-const POLL_INTERVAL = 60 * 1000; // 1 minute
+const VOLATILE = ["SOL", "WETH"];
+const POLL_INTERVAL = 60 * 1000;
+const MAX_POSITION = 0.4; // 40% max in any one token
+const MIN_TRADE_USD = 20;
+const MOMENTUM_WINDOW = 5; // 5 cycles (minutes)
+const REBALANCE_INTERVAL = 60; // every 60 cycles (1 hour)
 
 if (!API_KEY) {
   console.error("Missing RECALL_SANDBOX_API_KEY in .env");
@@ -85,6 +87,26 @@ async function getPortfolio() {
   return res.data;
 }
 
+async function getTokenPrice(tokenObj) {
+  try {
+    const params = {
+      token: tokenObj.address,
+      chain: tokenObj.chain,
+      specificChain: tokenObj.chain === 'evm' ? 'eth' : 'svm'
+    };
+    const res = await api.get('/price', { params });
+    if (res.data && res.data.success && typeof res.data.price === 'number') {
+      return res.data.price;
+    } else {
+      console.warn(`[PRICE WARNING] No price for token ${tokenObj.symbol} (${tokenObj.address})`);
+      return null;
+    }
+  } catch (error) {
+    console.warn(`[PRICE ERROR] Could not fetch price for ${tokenObj.symbol}:`, error.response?.data || error.message);
+    return null;
+  }
+}
+
 function flattenUSDC(tokens) {
   return tokens.filter(t => USDC_SYMBOLS.includes(t.symbol)).reduce((sum, t) => sum + (Number(t.value) || 0), 0);
 }
@@ -93,135 +115,249 @@ function getTotalPortfolioValue(tokens) {
   return tokens.reduce((sum, t) => sum + (Number(t.value) || 0), 0);
 }
 
-async function executeTrade({ token, side, amount }) {
-  const body = {
-    tokenAddress: token.address,
-    amount: amount.toString(),
-    side,
+function getTokenByAddress(address) {
+  return Object.values(TOKENS).find(t => t.address === address);
+}
+
+function getUsdcTokenForChain(chain) {
+  // Prefer the first USDC token for the chain
+  return Object.values(TOKENS).find(tok => USDC_SYMBOLS.includes(tok.symbol) && tok.chain === chain);
+}
+
+function getChainAndSpecific(token) {
+  return {
+    chain: token.chain,
+    specific: 'mainnet'
   };
-  const res = await api.post("/trade/execute", body);
-  return res.data;
 }
 
-function findOpportunities(snapshot, current) {
-  const sellOps = [];
-  const buyOps = [];
-  
-  for (const key in TOKENS) {
-    if (USDC_SYMBOLS.includes(TOKENS[key].symbol)) continue;
-    
-    const snap = snapshot.find(t => t.token === TOKENS[key].address);
-    const curr = current.find(t => t.token === TOKENS[key].address);
-    
-    if (!snap || !curr) continue;
-    
-    const change = snap.price ? (curr.price - snap.price) / snap.price : 0;
-    
-    // Sell opportunity: price increased by threshold
-    if (change >= PROFIT_THRESHOLD && curr.amount > 0) {
-      sellOps.push({ 
-        token: TOKENS[key], 
-        side: "sell", 
-        amount: curr.amount, 
-        price: curr.price, 
-        change,
-        value: curr.value
-      });
+async function executeTrade(fromTokenAddr, toTokenAddr, amount, reason, fromTokenObj, toTokenObj) {
+  const fromChainInfo = getChainAndSpecific(fromTokenObj);
+  const toChainInfo = getChainAndSpecific(toTokenObj);
+  const tradeData = {
+    fromToken: fromTokenAddr,
+    toToken: toTokenAddr,
+    amount: amount.toString(),
+    reason,
+    slippageTolerance: "0.5",
+    fromChain: fromChainInfo.chain,
+    fromSpecificChain: fromChainInfo.specific,
+    toChain: toChainInfo.chain,
+    toSpecificChain: toChainInfo.specific
+  };
+  console.log(`[TRADE ATTEMPT]`, tradeData);
+  try {
+    const res = await api.post("/trade/execute", tradeData);
+    return res.data;
+  } catch (error) {
+    if (error.response) {
+      console.error(`[TRADE ERROR] Status: ${error.response.status}`);
+      console.error(`[TRADE ERROR] Data:`, error.response.data);
+    } else {
+      console.error(`[TRADE ERROR]`, error.message);
     }
-    
-    // Buy opportunity: price dropped significantly
-    if (change <= BUY_THRESHOLD) {
-      buyOps.push({ 
-        token: TOKENS[key], 
-        side: "buy", 
-        price: curr.price, 
-        change,
-        targetPrice: snap.price
-      });
-    }
+    throw error;
   }
-  
-  return { sellOps, buyOps };
 }
 
-function calculateReinvestmentAmount(usdcTotal, buyOps) {
-  if (buyOps.length === 0) return 0;
-  
-  const reinvestmentAmount = usdcTotal * REINVESTMENT_PERCENTAGE;
-  const amountPerToken = reinvestmentAmount / buyOps.length;
-  
-  return Math.min(amountPerToken, usdcTotal * 0.05); // Max 5% per token
+async function canTrade(fromTokenObj, toTokenObj, amount) {
+  // Check price for both tokens
+  const fromPrice = await getTokenPrice(fromTokenObj);
+  const toPrice = await getTokenPrice(toTokenObj);
+  if (!fromPrice || !toPrice) {
+    console.warn(`[TRADE SKIP] No price for pair: ${fromTokenObj.symbol} -> ${toTokenObj.symbol}`);
+    return false;
+  }
+  // Check trade quote
+  try {
+    const params = {
+      fromToken: fromTokenObj.address,
+      toToken: toTokenObj.address,
+      amount: amount.toString(),
+      fromChain: fromTokenObj.chain,
+      fromSpecificChain: fromTokenObj.chain === 'evm' ? 'eth' : 'svm',
+      toChain: toTokenObj.chain,
+      toSpecificChain: toTokenObj.chain === 'evm' ? 'eth' : 'svm'
+    };
+    const res = await api.get('/trade/quote', { params });
+    if (res.data && res.data.fromAmount > 0 && res.data.toAmount > 0) {
+      return true;
+    } else {
+      console.warn(`[TRADE SKIP] No quote for pair: ${fromTokenObj.symbol} -> ${toTokenObj.symbol}`);
+      return false;
+    }
+  } catch (error) {
+    console.warn(`[TRADE SKIP] Quote error for pair: ${fromTokenObj.symbol} -> ${toTokenObj.symbol}`);
+    return false;
+  }
 }
 
 function formatNum(n) {
   return Number(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
+// Track price history for momentum/mean reversion
+const priceHistory = {};
+function updatePriceHistory(tokens) {
+  for (const t of tokens) {
+    if (!priceHistory[t.token]) priceHistory[t.token] = [];
+    priceHistory[t.token].push(t.price);
+    if (priceHistory[t.token].length > MOMENTUM_WINDOW) priceHistory[t.token].shift();
+  }
+}
+function getMomentum(tokenAddr) {
+  const hist = priceHistory[tokenAddr];
+  if (!hist || hist.length < MOMENTUM_WINDOW) return 0;
+  return (hist[hist.length - 1] - hist[0]) / hist[0];
+}
+
+function getAllocations(tokens, totalValue) {
+  const alloc = {};
+  for (const t of tokens) {
+    alloc[t.symbol] = (alloc[t.symbol] || 0) + (Number(t.value) || 0);
+  }
+  for (const k in alloc) alloc[k] = alloc[k] / totalValue;
+  return alloc;
+}
+
 async function main() {
   const initialPortfolio = await getPortfolio();
   const snapshotTokens = initialPortfolio.tokens;
-  const snapshotTime = initialPortfolio.snapshotTime;
-  const initialUSDC = flattenUSDC(snapshotTokens);
   const initialTotalValue = getTotalPortfolioValue(snapshotTokens);
-  let cumulativeProfit = 0;
   let cycleCount = 0;
+  let lastRebalance = 0;
+  let cumulativeProfit = 0;
+  let lastTotalValue = initialTotalValue;
 
   while (true) {
     cycleCount++;
-    const cycleStart = new Date();
     let usdcSpent = 0;
     let usdcGained = 0;
     let coinsBought = [];
     let coinsSold = [];
     try {
       const portfolio = await getPortfolio();
-      const currentTokens = portfolio.tokens;
-      const currentUSDC = flattenUSDC(currentTokens);
-      const currentTotalValue = getTotalPortfolioValue(currentTokens);
-      const { sellOps, buyOps } = findOpportunities(snapshotTokens, currentTokens);
-
-      // Sells
-      for (const op of sellOps) {
-        const minAmount = 10 ** -op.token.decimals;
-        if (op.amount > minAmount) {
-          try {
-            await executeTrade({ token: op.token, side: "sell", amount: op.amount });
-            usdcGained += Number(op.value) || 0;
-            coinsSold.push(`${op.token.symbol} (${formatNum(op.amount)})`);
-          } catch (error) {}
-        }
-      }
-      // Buys
-      if (buyOps.length > 0 && currentUSDC > 100) {
-        const reinvestAmount = calculateReinvestmentAmount(currentUSDC, buyOps);
-        for (const op of buyOps) {
-          if (reinvestAmount > 10) {
-            const buyAmount = reinvestAmount / op.price;
-            try {
-              await executeTrade({ token: op.token, side: "buy", amount: buyAmount });
-              usdcSpent += reinvestAmount;
-              coinsBought.push(`${op.token.symbol} (${formatNum(buyAmount)})`);
-            } catch (error) {}
+      const tokens = portfolio.tokens;
+      const totalValue = getTotalPortfolioValue(tokens);
+      const usdcValue = flattenUSDC(tokens);
+      updatePriceHistory(tokens);
+      const alloc = getAllocations(tokens, totalValue);
+      // --- SELL LOGIC: Take profit on strong momentum or overweight ---
+      for (const t of tokens) {
+        if (VOLATILE.includes(t.symbol) && t.amount > 0) {
+          const price = await getTokenPrice(getTokenByAddress(t.token));
+          if (!price) continue;
+          const momentum = getMomentum(t.token);
+          // Take profit if up >2% in window or allocation > max
+          if ((momentum > 0.02 || alloc[t.symbol] > MAX_POSITION) && t.value > MIN_TRADE_USD) {
+            const usdcToken = getUsdcTokenForChain(t.chain);
+            if (await canTrade(getTokenByAddress(t.token), usdcToken, t.amount)) {
+              await executeTrade(
+                t.token,
+                usdcToken.address,
+                t.amount,
+                momentum > 0.02 ? "Momentum profit taking" : "Rebalance overweight",
+                getTokenByAddress(t.token),
+                usdcToken
+              );
+              usdcGained += t.amount * price;
+              coinsSold.push(`${t.symbol} (${formatNum(t.amount)})`);
+            }
           }
         }
       }
-      // Profit calculation
-      const usdcChange = currentUSDC - initialUSDC;
-      const totalValueChange = currentTotalValue - initialTotalValue;
-      cumulativeProfit += usdcGained - usdcSpent;
-      const usdcChangePercent = initialUSDC ? (usdcChange / initialUSDC) * 100 : 0;
-      const totalValueChangePercent = initialTotalValue ? (totalValueChange / initialTotalValue) * 100 : 0;
-      const cycleEnd = new Date();
-      const cycleDuration = cycleEnd - cycleStart;
-      // Log summary
-      console.log(`\nCycle ${cycleCount} | ${cycleEnd.toLocaleTimeString()}`);
-      console.log(`USDC: $${formatNum(currentUSDC)} (${usdcChange >= 0 ? '+' : ''}${formatNum(usdcChange)}, ${usdcChangePercent >= 0 ? '+' : ''}${formatNum(usdcChangePercent)}%)`);
-      console.log(`Total Value: $${formatNum(currentTotalValue)} (${totalValueChange >= 0 ? '+' : ''}${formatNum(totalValueChange)}, ${totalValueChangePercent >= 0 ? '+' : ''}${formatNum(totalValueChangePercent)}%)`);
+      // --- BUY LOGIC: Buy dips or underweight, mean reversion ---
+      for (const sym of VOLATILE) {
+        const t = tokens.find(x => x.symbol === sym);
+        if (!t) continue;
+        const price = await getTokenPrice(getTokenByAddress(t.token));
+        if (!price) continue;
+        const momentum = getMomentum(t.token);
+        // Buy if down >2% in window or allocation < half max
+        if ((momentum < -0.02 || alloc[sym] < MAX_POSITION / 2) && usdcValue > MIN_TRADE_USD * 2) {
+          const usdcToken = getUsdcTokenForChain(t.chain);
+          const buyUSD = Math.min(usdcValue * 0.15, MIN_TRADE_USD * 5, (MAX_POSITION - (alloc[sym] || 0)) * totalValue);
+          if (buyUSD > MIN_TRADE_USD) {
+            const buyAmount = buyUSD / price;
+            if (await canTrade(usdcToken, getTokenByAddress(t.token), buyAmount)) {
+              await executeTrade(
+                usdcToken.address,
+                t.token,
+                buyAmount,
+                momentum < -0.02 ? "Mean reversion buy" : "Rebalance underweight",
+                usdcToken,
+                getTokenByAddress(t.token)
+              );
+              usdcSpent += buyUSD;
+              coinsBought.push(`${sym} (${formatNum(buyAmount)})`);
+            }
+          }
+        }
+      }
+      // --- REBALANCE LOGIC: Every hour, rebalance to target allocation ---
+      if (cycleCount - lastRebalance >= REBALANCE_INTERVAL) {
+        lastRebalance = cycleCount;
+        const targets = { USDC: 0.5, SOL: 0.25, WETH: 0.25 };
+        for (const sym of Object.keys(targets)) {
+          const curAlloc = alloc[sym] || 0;
+          const target = targets[sym];
+          if (curAlloc > target + 0.1 && sym !== "USDC") {
+            const t = tokens.find(x => x.symbol === sym);
+            if (t && t.value > MIN_TRADE_USD) {
+              const price = await getTokenPrice(getTokenByAddress(t.token));
+              if (!price) continue;
+              const usdcToken = getUsdcTokenForChain(t.chain);
+              if (await canTrade(getTokenByAddress(t.token), usdcToken, t.amount * 0.5)) {
+                await executeTrade(
+                  t.token,
+                  usdcToken.address,
+                  t.amount * 0.5,
+                  "Rebalance excess",
+                  getTokenByAddress(t.token),
+                  usdcToken
+                );
+                usdcGained += t.amount * 0.5 * price;
+                coinsSold.push(`${sym} (rebalance)`);
+              }
+            }
+          } else if (curAlloc < target - 0.1 && sym !== "USDC" && usdcValue > MIN_TRADE_USD * 2) {
+            const t = tokens.find(x => x.symbol === sym);
+            if (t) {
+              const price = await getTokenPrice(getTokenByAddress(t.token));
+              if (!price) continue;
+              const usdcToken = getUsdcTokenForChain(t.chain);
+              const buyUSD = Math.min((target - curAlloc) * totalValue, usdcValue * 0.2);
+              if (buyUSD > MIN_TRADE_USD) {
+                const buyAmount = buyUSD / price;
+                if (await canTrade(usdcToken, getTokenByAddress(t.token), buyAmount)) {
+                  await executeTrade(
+                    usdcToken.address,
+                    t.token,
+                    buyAmount,
+                    "Rebalance deficit",
+                    usdcToken,
+                    getTokenByAddress(t.token)
+                  );
+                  usdcSpent += buyUSD;
+                  coinsBought.push(`${sym} (rebalance)`);
+                }
+              }
+            }
+          }
+        }
+      }
+      // --- PROFIT TRACKING ---
+      const profit = totalValue - lastTotalValue;
+      cumulativeProfit += profit;
+      lastTotalValue = totalValue;
+      // --- LOGGING ---
+      console.log(`\nCycle ${cycleCount} | ${new Date().toLocaleTimeString()}`);
+      console.log(`Portfolio Value: $${formatNum(totalValue)}`);
+      console.log(`USDC: $${formatNum(usdcValue)}`);
       console.log(`Coins Bought: ${coinsBought.length ? coinsBought.join(', ') : 'None'}`);
       console.log(`Coins Sold: ${coinsSold.length ? coinsSold.join(', ') : 'None'}`);
       console.log(`USDC Spent: $${formatNum(usdcSpent)} | USDC Gained: $${formatNum(usdcGained)}`);
-      console.log(`Cumulative Profit: $${formatNum(cumulativeProfit)}`);
-      console.log(`Cycle Duration: ${cycleDuration}ms`);
+      console.log(`Cycle Profit: $${formatNum(profit)} | Cumulative Profit: $${formatNum(cumulativeProfit)}`);
     } catch (error) {
       console.error(`[ERROR] Cycle ${cycleCount}: ${error.message}`);
     }
