@@ -10,13 +10,13 @@ const BASE_URL = "https://api.sandbox.competitions.recall.network/api";
 
 // Token addresses and symbols from snapshot
 const TOKENS = {
-  USDC_1: {
+  USDC_ETH: {
     address: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
     symbol: "USDC",
     chain: "evm",
     decimals: 6
   },
-  USDC_2: {
+  USDC_POLYGON: {
     address: "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
     symbol: "USDC",
     chain: "evm",
@@ -28,13 +28,13 @@ const TOKENS = {
     chain: "evm",
     decimals: 6
   },
-  USDC_3: {
+  USDC_ARB: {
     address: "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
     symbol: "USDC",
     chain: "evm",
     decimals: 6
   },
-  USDC_4: {
+  USDC_OPTIMISM: {
     address: "0x7f5c764cbc14f9669b88837ca1490cca17c31607",
     symbol: "USDC",
     chain: "evm",
@@ -46,7 +46,7 @@ const TOKENS = {
     chain: "svm",
     decimals: 9
   },
-  USDC_SVM: {
+  USDC_SOL: {
     address: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
     symbol: "USDC",
     chain: "svm",
@@ -64,7 +64,12 @@ const USDC_SYMBOLS = ["USDC", "USDbC"];
 const VOLATILE = ["SOL", "WETH"];
 const POLL_INTERVAL = 60 * 1000;
 const MAX_POSITION = 0.4; // 40% max in any one token
-const MIN_TRADE_USD = 20;
+const MIN_TRADE_USD = 50; // Minimum USD value for trades
+const MIN_TRADE_AMOUNTS = {
+  USDC: 10,    // 10 USDC minimum
+  SOL: 0.1,    // 0.1 SOL minimum  
+  WETH: 0.01   // 0.01 WETH minimum
+};
 const MOMENTUM_WINDOW = 5; // 5 cycles (minutes)
 const REBALANCE_INTERVAL = 60; // every 60 cycles (1 hour)
 
@@ -125,13 +130,26 @@ function getTokenByAddress(address) {
 }
 
 function getUsdcTokenForChain(chain) {
-  // Prefer the first USDC token for the chain
-  return Object.values(TOKENS).find(tok => USDC_SYMBOLS.includes(tok.symbol) && tok.chain === chain);
+  // Return the appropriate USDC token for the given chain
+  if (chain === 'evm') {
+    return TOKENS.USDC_ETH; // Use Ethereum USDC for EVM chains
+  } else if (chain === 'svm') {
+    return TOKENS.USDC_SOL; // Use Solana USDC for SVM chains
+  }
+  // Fallback to Ethereum USDC
+  return TOKENS.USDC_ETH;
 }
 
 
 
 async function executeTrade(fromTokenAddr, toTokenAddr, amount, reason, fromTokenObj, toTokenObj) {
+  // Validate minimum trade amount
+  const amountNum = parseFloat(amount);
+  if (amountNum < MIN_TRADE_AMOUNTS[fromTokenObj.symbol]) {
+    console.warn(`[TRADE SKIP] Amount too small: ${amount} ${fromTokenObj.symbol} (min: ${MIN_TRADE_AMOUNTS[fromTokenObj.symbol]})`);
+    return { success: false, error: 'Amount too small' };
+  }
+
   // Build trade data based on token chains
   const tradeData = {
     fromToken: fromTokenAddr,
@@ -177,16 +195,16 @@ async function executeTrade(fromTokenAddr, toTokenAddr, amount, reason, fromToke
 }
 
 async function canTrade(fromTokenObj, toTokenObj, amount) {
-  // Check price for both tokens
-  const fromPrice = await getTokenPrice(fromTokenObj);
-  const toPrice = await getTokenPrice(toTokenObj);
-  if (!fromPrice || !toPrice) {
-    console.warn(`[TRADE SKIP] No price for pair: ${fromTokenObj.symbol} -> ${toTokenObj.symbol}`);
-    return false;
-  }
-  
-  // Check trade quote
   try {
+    // Check price for both tokens
+    const fromPrice = await getTokenPrice(fromTokenObj);
+    const toPrice = await getTokenPrice(toTokenObj);
+    if (!fromPrice || !toPrice) {
+      console.warn(`[TRADE SKIP] No price for pair: ${fromTokenObj.symbol} -> ${toTokenObj.symbol}`);
+      return false;
+    }
+    
+    // Check trade quote
     const params = {
       fromToken: fromTokenObj.address,
       toToken: toTokenObj.address,
@@ -211,7 +229,7 @@ async function canTrade(fromTokenObj, toTokenObj, amount) {
       return false;
     }
   } catch (error) {
-    console.warn(`[TRADE SKIP] Quote error for pair: ${fromTokenObj.symbol} -> ${toTokenObj.symbol}`);
+    console.warn(`[TRADE SKIP] Quote error for pair: ${fromTokenObj.symbol} -> ${toTokenObj.symbol}: ${error.message}`);
     return false;
   }
 }
@@ -273,8 +291,9 @@ async function main() {
           if (!price) continue;
           const momentum = getMomentum(t.token);
           // Take profit if up >2% in window or allocation > max
-          if ((momentum > 0.02 || alloc[t.symbol] > MAX_POSITION) && t.value > MIN_TRADE_USD) {
+          if ((momentum > 0.02 || alloc[t.symbol] > MAX_POSITION) && t.value > MIN_TRADE_USD && t.amount >= MIN_TRADE_AMOUNTS[t.symbol]) {
             const usdcToken = getUsdcTokenForChain(t.chain);
+            console.log(`[DEBUG] ${t.symbol} sell check: amount=${t.amount}, min=${MIN_TRADE_AMOUNTS[t.symbol]}, value=${t.value}, momentum=${momentum}, alloc=${alloc[t.symbol]}`);
             if (await canTrade(getTokenByAddress(t.token), usdcToken, t.amount)) {
               await executeTrade(
                 t.token,
@@ -286,7 +305,11 @@ async function main() {
               );
               usdcGained += t.amount * price;
               coinsSold.push(`${t.symbol} (${formatNum(t.amount)})`);
+            } else {
+              console.log(`[SKIP] ${t.symbol} sell canTrade check failed`);
             }
+          } else {
+            console.log(`[SKIP] ${t.symbol} sell conditions not met: momentum=${momentum}, alloc=${alloc[t.symbol]}, value=${t.value}, amount=${t.amount}, min=${MIN_TRADE_AMOUNTS[t.symbol]}`);
           }
         }
       }
@@ -297,13 +320,47 @@ async function main() {
         const price = await getTokenPrice(getTokenByAddress(t.token));
         if (!price) continue;
         const momentum = getMomentum(t.token);
-        // Buy if down >2% in window or allocation < half max
+        let buyUSD, buyAmount;
+
+        if (sym === "WETH") {
+          // Always try to buy at least 10 WETH if possible
+          buyAmount = Math.max(MIN_TRADE_AMOUNTS[sym], Math.min((MAX_POSITION - (alloc[sym] || 0)) * totalValue / price, usdcValue / price));
+          buyUSD = buyAmount * price;
+          if (buyAmount > usdcValue / price) {
+            buyAmount = usdcValue / price;
+            buyUSD = buyAmount * price;
+          }
+          console.log(`[FORCED BUY] WETH: Attempting to buy ${buyAmount} WETH (USD=${buyUSD})`);
+          if (buyAmount >= MIN_TRADE_AMOUNTS[sym] && buyUSD >= MIN_TRADE_USD) {
+            if (await canTrade(getUsdcTokenForChain(t.chain), getTokenByAddress(t.token), buyAmount)) {
+              await executeTrade(
+                getUsdcTokenForChain(t.chain).address,
+                t.token,
+                buyAmount,
+                "Forced minimum WETH buy for portfolio growth",
+                getUsdcTokenForChain(t.chain),
+                getTokenByAddress(t.token)
+              );
+              usdcSpent += buyUSD;
+              coinsBought.push(`${sym} (${formatNum(buyAmount)})`);
+            } else {
+              console.log(`[SKIP] WETH canTrade check failed for forced buy`);
+            }
+          } else {
+            console.log(`[SKIP] WETH forced buy: Not enough USDC or below minimum trade size. buyAmount=${buyAmount}, buyUSD=${buyUSD}`);
+          }
+          continue; // Skip normal logic for WETH
+        }
+
+        // Normal buy logic for other tokens
         if ((momentum < -0.02 || alloc[sym] < MAX_POSITION / 2) && usdcValue > MIN_TRADE_USD * 2) {
           const usdcToken = getUsdcTokenForChain(t.chain);
-          const buyUSD = Math.min(usdcValue * 0.15, MIN_TRADE_USD * 5, (MAX_POSITION - (alloc[sym] || 0)) * totalValue);
-          if (buyUSD > MIN_TRADE_USD) {
-            const buyAmount = buyUSD / price;
-            if (await canTrade(usdcToken, getTokenByAddress(t.token), buyAmount)) {
+          buyUSD = Math.min(usdcValue * 0.25, MIN_TRADE_USD * 3, (MAX_POSITION - (alloc[sym] || 0)) * totalValue);
+          if (buyUSD >= MIN_TRADE_USD) {
+            buyAmount = buyUSD / price;
+            console.log(`[DEBUG] ${sym} buy calculation: USD=${buyUSD}, Amount=${buyAmount}, Min=${MIN_TRADE_AMOUNTS[sym]}, PassesMin=${buyAmount >= MIN_TRADE_AMOUNTS[sym]}`);
+            // Ensure minimum amount in token units
+            if (buyAmount >= MIN_TRADE_AMOUNTS[sym] && await canTrade(usdcToken, getTokenByAddress(t.token), buyAmount)) {
               await executeTrade(
                 usdcToken.address,
                 t.token,
@@ -314,8 +371,18 @@ async function main() {
               );
               usdcSpent += buyUSD;
               coinsBought.push(`${sym} (${formatNum(buyAmount)})`);
+            } else {
+              if (buyAmount < MIN_TRADE_AMOUNTS[sym]) {
+                console.log(`[SKIP] ${sym} amount too small: ${buyAmount} < ${MIN_TRADE_AMOUNTS[sym]}`);
+              } else {
+                console.log(`[SKIP] ${sym} canTrade check failed`);
+              }
             }
+          } else {
+            console.log(`[SKIP] ${sym} USD amount too small: ${buyUSD} < ${MIN_TRADE_USD}`);
           }
+        } else {
+          console.log(`[SKIP] ${sym} conditions not met: momentum=${momentum}, alloc=${alloc[sym]}, usdcValue=${usdcValue}`);
         }
       }
       // --- REBALANCE LOGIC: Every hour, rebalance to target allocation ---
@@ -327,10 +394,11 @@ async function main() {
           const target = targets[sym];
           if (curAlloc > target + 0.1 && sym !== "USDC") {
             const t = tokens.find(x => x.symbol === sym);
-            if (t && t.value > MIN_TRADE_USD) {
+            if (t && t.value > MIN_TRADE_USD && t.amount * 0.5 >= MIN_TRADE_AMOUNTS[sym]) {
               const price = await getTokenPrice(getTokenByAddress(t.token));
               if (!price) continue;
               const usdcToken = getUsdcTokenForChain(t.chain);
+              console.log(`[DEBUG] ${sym} rebalance sell: amount=${t.amount * 0.5}, min=${MIN_TRADE_AMOUNTS[sym]}, curAlloc=${curAlloc}, target=${target}`);
               if (await canTrade(getTokenByAddress(t.token), usdcToken, t.amount * 0.5)) {
                 await executeTrade(
                   t.token,
@@ -342,7 +410,11 @@ async function main() {
                 );
                 usdcGained += t.amount * 0.5 * price;
                 coinsSold.push(`${sym} (rebalance)`);
+              } else {
+                console.log(`[SKIP] ${sym} rebalance sell canTrade check failed`);
               }
+            } else {
+              console.log(`[SKIP] ${sym} rebalance sell conditions not met: value=${t?.value}, amount=${t?.amount * 0.5}, min=${MIN_TRADE_AMOUNTS[sym]}`);
             }
           } else if (curAlloc < target - 0.1 && sym !== "USDC" && usdcValue > MIN_TRADE_USD * 2) {
             const t = tokens.find(x => x.symbol === sym);
@@ -350,10 +422,12 @@ async function main() {
               const price = await getTokenPrice(getTokenByAddress(t.token));
               if (!price) continue;
               const usdcToken = getUsdcTokenForChain(t.chain);
-              const buyUSD = Math.min((target - curAlloc) * totalValue, usdcValue * 0.2);
-              if (buyUSD > MIN_TRADE_USD) {
+              const buyUSD = Math.min((target - curAlloc) * totalValue, usdcValue * 0.3);
+              if (buyUSD >= MIN_TRADE_USD) {
                 const buyAmount = buyUSD / price;
-                if (await canTrade(usdcToken, getTokenByAddress(t.token), buyAmount)) {
+                console.log(`[DEBUG] ${sym} rebalance buy: USD=${buyUSD}, amount=${buyAmount}, min=${MIN_TRADE_AMOUNTS[sym]}, curAlloc=${curAlloc}, target=${target}`);
+                // Ensure minimum amount in token units
+                if (buyAmount >= MIN_TRADE_AMOUNTS[sym] && await canTrade(usdcToken, getTokenByAddress(t.token), buyAmount)) {
                   await executeTrade(
                     usdcToken.address,
                     t.token,
@@ -364,9 +438,19 @@ async function main() {
                   );
                   usdcSpent += buyUSD;
                   coinsBought.push(`${sym} (rebalance)`);
+                } else {
+                  if (buyAmount < MIN_TRADE_AMOUNTS[sym]) {
+                    console.log(`[SKIP] ${sym} rebalance buy amount too small: ${buyAmount} < ${MIN_TRADE_AMOUNTS[sym]}`);
+                  } else {
+                    console.log(`[SKIP] ${sym} rebalance buy canTrade check failed`);
+                  }
                 }
+              } else {
+                console.log(`[SKIP] ${sym} rebalance buy USD too small: ${buyUSD} < ${MIN_TRADE_USD}`);
               }
             }
+          } else {
+            console.log(`[SKIP] ${sym} rebalance conditions not met: curAlloc=${curAlloc}, target=${target}, usdcValue=${usdcValue}`);
           }
         }
       }
@@ -384,6 +468,8 @@ async function main() {
       console.log(`Cycle Profit: $${formatNum(profit)} | Cumulative Profit: $${formatNum(cumulativeProfit)}`);
     } catch (error) {
       console.error(`[ERROR] Cycle ${cycleCount}: ${error.message}`);
+      console.error(`[ERROR] Stack trace:`, error.stack);
+      // Continue to next cycle instead of crashing
     }
     await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL));
   }
