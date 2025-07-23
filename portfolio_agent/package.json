@@ -7,7 +7,7 @@
   "scripts": {
     "start": "node src/recall_agent.js",
     "gaia": "node src/gaia.js",
-    "dev": "node src/recall_agent.js",
+    "dev": "nodemon src/recall_agent.js",
     "test": "jest"
   },
   "keywords": ["trading", "automation", "recall", "crypto"],
