@@ -26,7 +26,16 @@ const TOKENS = {
     address: "0xd9aAEc86B65D86f6A7B5B1b0c42FFA531710b6CA",
     symbol: "USDbC",
     chain: "evm",
-    decimals: 6
+    decimals: 6,
+    chainSpecific: "base"
+  },
+  // Base chain native token
+  ETH_BASE: {
+    address: "0x4200000000000000000000000000000000000006",
+    symbol: "ETH_BASE",
+    chain: "evm",
+    decimals: 18,
+    chainSpecific: "base"
   },
   USDC_ARB: {
     address: "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
@@ -96,7 +105,7 @@ const TOKENS = {
 };
 
 const USDC_SYMBOLS = ["USDC", "USDbC"];
-const VOLATILE = ["SOL", "WETH", "ARB", "OP", "MATIC", "LINK", "UNI"]; // Expanded for multi-chain trading
+const VOLATILE = ["SOL", "WETH", "ARB", "OP", "MATIC", "ETH_BASE"]; // Chain-specific tokens with proper USDC pairs
 const POLL_INTERVAL = 60 * 1000;
 const MAX_POSITION = 0.25; // Reduced to 25% max for better diversification across more tokens
 const MIN_TRADE_USD = 50; // Minimum USD value for trades
@@ -105,11 +114,10 @@ const MIN_TRADE_AMOUNTS = {
   USDbC: 10,    // 10 USDbC minimum  
   SOL: 0.1,     // 0.1 SOL minimum  
   WETH: 0.01,   // 0.01 WETH minimum
-  ARB: 0.5,     // 0.5 ARB minimum (reduced for easier trading)
-  OP: 0.5,      // 0.5 OP minimum (reduced for easier trading)
-  MATIC: 5,     // 5 MATIC minimum (reduced from 10)
-  LINK: 0.3,    // 0.3 LINK minimum (reduced from 0.5)
-  UNI: 0.5      // 0.5 UNI minimum (reduced from 1)
+  ARB: 0.5,     // 0.5 ARB minimum
+  OP: 0.5,      // 0.5 OP minimum
+  MATIC: 5,     // 5 MATIC minimum
+  ETH_BASE: 0.01 // 0.01 ETH_BASE minimum
 };
 const MOMENTUM_WINDOW = 5; // 5 cycles (minutes)
 const REBALANCE_INTERVAL = 30; // Reduced to 30 cycles for more active rebalancing
@@ -134,28 +142,39 @@ async function getPortfolio() {
 }
 
 async function getTokenPrice(tokenObj) {
-  try {
-    const params = {
-      token: tokenObj.address
-    };
+  const maxRetries = 3;
+  let attempts = 0;
+  
+  while (attempts < maxRetries) {
+    try {
+      const params = {
+        token: tokenObj.address
+      };
 
-    // Only add chain specifications for Solana tokens
-    if (tokenObj.chain === 'svm') {
-      params.chain = "svm";
-      params.specificChain = "mainnet";
-    }
+      // Only add chain specifications for Solana tokens
+      if (tokenObj.chain === 'svm') {
+        params.chain = "svm";
+        params.specificChain = "mainnet";
+      }
 
-    const res = await api.get('/price', { params });
-    if (res.data && res.data.success && typeof res.data.price === 'number') {
-      return res.data.price;
-    } else {
-      console.warn(`[PRICE WARNING] No price for token ${tokenObj.symbol} (${tokenObj.address})`);
-      return null;
+      const res = await api.get('/price', { params });
+      if (res.data && res.data.success && typeof res.data.price === 'number') {
+        return res.data.price;
+      } else {
+        console.warn(`[PRICE WARNING] No price for token ${tokenObj.symbol} (${tokenObj.address}) - attempt ${attempts + 1}`);
+      }
+    } catch (error) {
+      attempts++;
+      console.warn(`[PRICE ERROR] Could not fetch price for ${tokenObj.symbol} (attempt ${attempts}):`, error.message);
+      
+      if (attempts < maxRetries) {
+        await new Promise(resolve => setTimeout(resolve, 1000 * attempts)); // Exponential backoff
+      }
     }
-  } catch (error) {
-    console.warn(`[PRICE ERROR] Could not fetch price for ${tokenObj.symbol}:`, error.response?.data || error.message);
-    return null;
   }
+  
+  console.warn(`[PRICE FAILURE] Failed to get price for ${tokenObj.symbol} after ${maxRetries} attempts`);
+  return null;
 }
 
 function flattenUSDC(tokens) {
@@ -170,14 +189,29 @@ function getTokenByAddress(address) {
   return Object.values(TOKENS).find(t => t.address === address);
 }
 
-function getUsdcTokenForChain(chain) {
-  // Return the appropriate USDC token for the given chain
-  if (chain === 'evm') {
-    return TOKENS.USDC_ETH; // Use Ethereum USDC for EVM chains
-  } else if (chain === 'svm') {
-    return TOKENS.USDC_SOL; // Use Solana USDC for SVM chains
+function getUsdcTokenForChain(tokenObj) {
+  // Return the appropriate USDC token based on the target token's chain
+  if (tokenObj.chain === 'svm') {
+    return TOKENS.USDC_SOL; // Solana USDC for SVM tokens
   }
-  // Fallback to Ethereum USDC
+  
+  // For EVM tokens, use chain-specific USDC based on chainSpecific property
+  if (tokenObj.chainSpecific) {
+    switch (tokenObj.chainSpecific) {
+      case 'arbitrum':
+        return TOKENS.USDC_ARB; // Arbitrum USDC for ARB token
+      case 'optimism':
+        return TOKENS.USDC_OPTIMISM; // Optimism USDC for OP token
+      case 'polygon':
+        return TOKENS.USDC_POLYGON; // Polygon USDC for MATIC token
+      case 'base':
+        return TOKENS.USDbC; // Base USDC for ETH_BASE token
+      default:
+        return TOKENS.USDC_ETH; // Default to Ethereum USDC
+    }
+  }
+  
+  // For tokens without specific chain requirements, use Ethereum USDC
   return TOKENS.USDC_ETH;
 }
 
@@ -217,28 +251,49 @@ async function executeTrade(fromTokenAddr, toTokenAddr, amount, reason, fromToke
   }
 
   console.log(`[TRADE ATTEMPT] ${fromTokenObj.symbol} -> ${toTokenObj.symbol}`, tradeData);
-  try {
-    const res = await api.post("/trade/execute", tradeData);
-    if (res.data && res.data.success) {
-      console.log(`✅ [TRADE SUCCESS] ${fromTokenObj.symbol} -> ${toTokenObj.symbol}:`, {
-        fromAmount: res.data.transaction?.fromAmount,
-        toAmount: res.data.transaction?.toAmount,
-        tradeValue: res.data.transaction?.tradeAmountUsd,
-        transactionId: res.data.transaction?.id
-      });
-    } else {
-      console.error(`❌ [TRADE FAILED] ${fromTokenObj.symbol} -> ${toTokenObj.symbol}:`, res.data?.error || 'Unknown error');
+  const maxRetries = 2;
+  let attempts = 0;
+  
+  while (attempts < maxRetries) {
+    try {
+      const res = await api.post("/trade/execute", tradeData);
+      if (res.data && res.data.success) {
+        console.log(`✅ [TRADE SUCCESS] ${fromTokenObj.symbol} -> ${toTokenObj.symbol}:`, {
+          fromAmount: res.data.transaction?.fromAmount,
+          toAmount: res.data.transaction?.toAmount,
+          tradeValue: res.data.transaction?.tradeAmountUsd,
+          transactionId: res.data.transaction?.id
+        });
+        return res.data;
+      } else {
+        console.error(`❌ [TRADE FAILED] ${fromTokenObj.symbol} -> ${toTokenObj.symbol}:`, res.data?.error || 'Unknown error');
+        return { success: false, error: res.data?.error || 'Trade failed' };
+      }
+    } catch (error) {
+      attempts++;
+      
+      if (error.response) {
+        console.error(`❌ [TRADE ERROR] ${fromTokenObj.symbol} -> ${toTokenObj.symbol} Status: ${error.response.status} (attempt ${attempts})`);
+        console.error(`❌ [TRADE ERROR] Data:`, error.response.data);
+        
+        // Don't retry on certain errors
+        if (error.response.status === 400 && error.response.data?.error?.includes('Insufficient balance')) {
+          console.log(`💰 [NO RETRY] Insufficient balance error - skipping retry`);
+          return { success: false, error: 'Insufficient balance' };
+        }
+      } else {
+        console.error(`❌ [TRADE ERROR] ${fromTokenObj.symbol} -> ${toTokenObj.symbol} (attempt ${attempts}):`, error.message);
+      }
+      
+      if (attempts < maxRetries) {
+        console.log(`🔄 [RETRY] Retrying trade in ${attempts * 2} seconds...`);
+        await new Promise(resolve => setTimeout(resolve, attempts * 2000)); // Exponential backoff
+      }
     }
-    return res.data;
-  } catch (error) {
-    if (error.response) {
-      console.error(`❌ [TRADE ERROR] ${fromTokenObj.symbol} -> ${toTokenObj.symbol} Status: ${error.response.status}`);
-      console.error(`❌ [TRADE ERROR] Data:`, error.response.data);
-    } else {
-      console.error(`❌ [TRADE ERROR] ${fromTokenObj.symbol} -> ${toTokenObj.symbol}:`, error.message);
-    }
-    throw error;
   }
+  
+  console.error(`❌ [TRADE FAILURE] Failed to execute trade after ${maxRetries} attempts`);
+  return { success: false, error: 'Max retries exceeded' };
 }
 
 async function canTrade(fromTokenObj, toTokenObj, amount) {
@@ -317,13 +372,53 @@ async function main() {
   let lastRebalance = 0;
   let cumulativeProfit = 0;
   let lastTotalValue = initialTotalValue;
+  
+  // 24-hour tracking
+  const startTime = Date.now();
+  const endTime = startTime + (24 * 60 * 60 * 1000); // 24 hours from start
+  let lastHourlyReport = 0;
+  const hourlyData = [];
+  
+  console.log(`\n🚀 24-HOUR TRADING MARATHON STARTED! 🚀`);
+  console.log(`📅 Start Time: ${new Date(startTime).toLocaleString()}`);
+  console.log(`🎯 Target: 100% portfolio increase (2x)`);
+  console.log(`💰 Starting Portfolio: $${formatNum(initialTotalValue)}`);
+  console.log(`🏁 End Time: ${new Date(endTime).toLocaleString()}`);
+  console.log(`⏰ Duration: 24 hours\n`);
 
-  while (true) {
+  while (Date.now() < endTime) {
     cycleCount++;
     let usdcSpent = 0;
     let usdcGained = 0;
     let coinsBought = [];
     let coinsSold = [];
+    
+    // Check for hourly report
+    const currentTime = Date.now();
+    const hoursElapsed = Math.floor((currentTime - startTime) / (60 * 60 * 1000));
+    
+    if (hoursElapsed > lastHourlyReport) {
+      lastHourlyReport = hoursElapsed;
+      const currentPortfolio = await getPortfolio();
+      const currentValue = getTotalPortfolioValue(currentPortfolio.tokens);
+      const hourlyProfit = currentValue - initialTotalValue;
+      const hourlyReturn = ((currentValue / initialTotalValue - 1) * 100);
+      
+      hourlyData.push({
+        hour: hoursElapsed,
+        value: currentValue,
+        profit: hourlyProfit,
+        return: hourlyReturn,
+        time: new Date(currentTime).toLocaleString()
+      });
+      
+      console.log(`\n⏰ HOURLY REPORT - Hour ${hoursElapsed}/24`);
+      console.log(`📊 Portfolio Value: $${formatNum(currentValue)}`);
+      console.log(`💰 Profit: $${formatNum(hourlyProfit)} (${hourlyReturn.toFixed(2)}%)`);
+      console.log(`🎯 Target Progress: ${(hourlyReturn/100).toFixed(1)}x / 2.0x`);
+      console.log(`⏳ Time Remaining: ${24 - hoursElapsed} hours\n`);
+    }
+    
     try {
       const portfolio = await getPortfolio();
       const tokens = portfolio.tokens;
@@ -331,6 +426,37 @@ async function main() {
       const usdcValue = flattenUSDC(tokens);
       updatePriceHistory(tokens);
       const alloc = getAllocations(tokens, totalValue);
+      const usdcRatio = usdcValue / totalValue;
+      
+      // --- EMERGENCY USDC REPLENISHMENT: Sell if USDC critically low ---
+      if (usdcRatio < 0.15) { // If USDC < 15% of portfolio
+        console.log(`🚨 [EMERGENCY] USDC critically low: ${(usdcRatio * 100).toFixed(1)}% - Emergency selling!`);
+        for (const t of tokens) {
+          if (VOLATILE.includes(t.symbol) && t.amount > 0 && t.value > MIN_TRADE_USD) {
+            const tokenObj = getTokenByAddress(t.token);
+            if (tokenObj) {
+              const usdcToken = getUsdcTokenForChain(tokenObj);
+              const emergencySellAmount = t.amount * 0.5; // Sell 50% immediately
+              
+              if (emergencySellAmount >= MIN_TRADE_AMOUNTS[t.symbol] && await canTrade(tokenObj, usdcToken, emergencySellAmount)) {
+                console.log(`🚨 [EMERGENCY SELL] ${t.symbol}: ${emergencySellAmount.toFixed(4)} tokens for USDC`);
+                await executeTrade(
+                  tokenObj.address,
+                  usdcToken.address,
+                  emergencySellAmount,
+                  "Emergency USDC replenishment",
+                  tokenObj,
+                  usdcToken
+                );
+                usdcGained += emergencySellAmount * (await getTokenPrice(tokenObj) || 0);
+                coinsSold.push(`${t.symbol} (EMERGENCY)`);
+                break; // Only sell one token per emergency cycle
+              }
+            }
+          }
+        }
+      }
+      
       // --- AGGRESSIVE SELL LOGIC: Rapid profit taking and position management ---
       for (const t of tokens) {
         if (VOLATILE.includes(t.symbol) && t.amount > 0) {
@@ -339,28 +465,39 @@ async function main() {
           const momentum = getMomentum(t.token);
           const currentAlloc = alloc[t.symbol] || 0;
           
-          // Ultra-aggressive sell conditions for 24hr profit maximization
+          // USDC-aware sell conditions for balance management
+          const usdcRatio = usdcValue / totalValue;
+          const isUsdcLow = usdcRatio < 0.25; // Trigger if USDC < 25% of portfolio
+          
           const shouldSell = (
-            momentum > 0.01 ||  // Take profit on even smaller gains (1% instead of 1.5%)
-            currentAlloc > MAX_POSITION * 0.8 ||  // Sell if over 80% of max position
-            (momentum < -0.003 && currentAlloc > MAX_POSITION * 0.3)  // Cut losses very fast
+            momentum > 0.005 ||  // Take profit on smaller gains when profitable
+            currentAlloc > MAX_POSITION * 0.8 ||  // Sell if over allocation limit
+            (momentum < -0.003 && currentAlloc > MAX_POSITION * 0.3) ||  // Cut losses fast
+            (isUsdcLow && t.value > MIN_TRADE_USD * 2) ||  // Emergency USDC replenishment
+            (isUsdcLow && momentum > 0.002)  // Sell any profitable position when USDC low
           );
           
           if (shouldSell && t.value > MIN_TRADE_USD && t.amount >= MIN_TRADE_AMOUNTS[t.symbol]) {
-            const usdcToken = getUsdcTokenForChain(t.chain);
+            const usdcToken = getUsdcTokenForChain(getTokenByAddress(t.token));
             
-            // Determine sell amount based on conditions - ultra-aggressive for 24hr
+            // Determine sell amount based on USDC needs and conditions
             let sellAmount = t.amount;
-            if (momentum > 0.01 && currentAlloc < MAX_POSITION) {
-              sellAmount = t.amount * 0.7; // More aggressive partial profit taking
+            
+            if (isUsdcLow) {
+              // Emergency USDC replenishment - sell more aggressively
+              sellAmount = t.amount * 0.8; // Sell 80% when USDC is low
+              console.log(`[USDC LOW] ${t.symbol}: USDC ratio ${(usdcRatio * 100).toFixed(1)}%, emergency sell`);
+            } else if (momentum > 0.005 && currentAlloc < MAX_POSITION) {
+              sellAmount = t.amount * 0.6; // Standard profit taking
             } else if (momentum < -0.003) {
-              sellAmount = t.amount * 0.9; // Very aggressive loss cutting
+              sellAmount = t.amount * 0.9; // Aggressive loss cutting
             }
             
             console.log(`[AGGRESSIVE SELL] ${t.symbol}: momentum=${momentum.toFixed(4)}, alloc=${currentAlloc.toFixed(3)}, selling=${sellAmount.toFixed(4)}`);
             
             if (sellAmount >= MIN_TRADE_AMOUNTS[t.symbol] && await canTrade(getTokenByAddress(t.token), usdcToken, sellAmount)) {
-              const reason = momentum > 0.01 ? `Profit taking (${momentum.toFixed(3)})` : 
+              const reason = isUsdcLow ? `USDC replenishment (${(usdcRatio * 100).toFixed(1)}%)` :
+                           momentum > 0.005 ? `Profit taking (${momentum.toFixed(3)})` : 
                            momentum < -0.003 ? `Loss cutting (${momentum.toFixed(3)})` : 
                            "Position rebalance";
               
@@ -409,26 +546,30 @@ async function main() {
           (momentum > 0.005 && currentAlloc < MAX_POSITION * 0.7)  // Buy on small momentum if under 70% allocation
         );
         
-        if (shouldBuy && usdcValue > MIN_TRADE_USD) {
-          const usdcToken = getUsdcTokenForChain(tokenObj.chain);
-          // More aggressive position sizing
+        // Only buy if we have sufficient USDC buffer
+        if (shouldBuy && usdcValue > MIN_TRADE_USD * 4) {
+          const usdcToken = getUsdcTokenForChain(tokenObj);
+          
+          // Conservative position sizing to prevent USDC drain
           let buyUSD = Math.min(
-            usdcValue * 0.4,  // Use up to 40% of USDC per trade
+            usdcValue * 0.15,  // Reduced from 40% to 15% to preserve USDC
             (MAX_POSITION - currentAlloc) * totalValue,
-            MIN_TRADE_USD * 5  // Larger max trade size
+            MIN_TRADE_USD * 2,  // Smaller max trade size
+            usdcValue - (MIN_TRADE_USD * 3)  // Always keep 3x MIN_TRADE buffer
           );
           
-          // Special aggressive logic for high-momentum tokens
-          if (momentum > 0.005) {
-            buyUSD = Math.min(buyUSD * 1.5, usdcValue * 0.6); // Extra aggressive on positive momentum
-            console.log(`[MOMENTUM BUY] ${sym}: Positive momentum ${momentum.toFixed(4)}, increasing buy size`);
+          // More moderate momentum logic to preserve balance
+          if (momentum > 0.005 && usdcValue > MIN_TRADE_USD * 6) {
+            buyUSD = Math.min(buyUSD * 1.2, usdcValue * 0.25); // Less aggressive, better balance management
+            console.log(`[MOMENTUM BUY] ${sym}: Positive momentum ${momentum.toFixed(4)}, modest size increase`);
           }
           
-          if (buyUSD >= MIN_TRADE_USD) {
+          if (buyUSD >= MIN_TRADE_USD && buyUSD <= usdcValue - MIN_TRADE_USD) {
             const buyAmount = buyUSD / price;
-            console.log(`[AGGRESSIVE BUY] ${sym}: momentum=${momentum.toFixed(4)}, alloc=${currentAlloc.toFixed(3)}, buyUSD=${buyUSD.toFixed(2)}`);
+            console.log(`[CONSERVATIVE BUY] ${sym}: momentum=${momentum.toFixed(4)}, alloc=${currentAlloc.toFixed(3)}, buyUSD=${buyUSD.toFixed(2)}, available=${usdcValue.toFixed(2)}`);
             
-            if (buyAmount >= MIN_TRADE_AMOUNTS[sym] && await canTrade(usdcToken, tokenObj, buyAmount)) {
+            // Double-check we have sufficient balance before trading
+            if (buyAmount >= MIN_TRADE_AMOUNTS[sym] && buyUSD <= usdcValue * 0.9 && await canTrade(usdcToken, tokenObj, buyAmount)) {
               const reason = momentum < -0.005 ? `Dip buy (${momentum.toFixed(3)})` : 
                            momentum > 0.005 ? `Momentum follow (${momentum.toFixed(3)})` : 
                            "Position building";
@@ -451,21 +592,20 @@ async function main() {
           console.log(`[SKIP] ${sym} no buy signal: momentum=${momentum.toFixed(4)}, alloc=${currentAlloc.toFixed(3)}, usdcValue=${usdcValue.toFixed(2)}`);
         }
       }
-      // --- AGGRESSIVE REBALANCE LOGIC: Multi-token diversification for profit maximization ---
-      if (cycleCount - lastRebalance >= REBALANCE_INTERVAL) {
+      // --- SMART REBALANCE LOGIC: Skip rebalancing when USDC is low ---
+      if (cycleCount - lastRebalance >= REBALANCE_INTERVAL && usdcRatio > 0.20) {
         lastRebalance = cycleCount;
         console.log(`\n⚖️ AGGRESSIVE REBALANCING PORTFOLIO (Cycle ${cycleCount}):`);
         
-        // Aggressive multi-token allocation for 24hr profit maximization
+        // Professional multi-chain allocation with proper USDC pairing
         const targets = { 
-          USDC: 0.30,   // Reduced USDC for more active trading
-          WETH: 0.20,   // ETH exposure
-          SOL: 0.20,    // Solana exposure
-          ARB: 0.10,    // Arbitrum native
-          OP: 0.10,     // Optimism native
-          MATIC: 0.05,  // Polygon native
-          LINK: 0.03,   // DeFi blue chip
-          UNI: 0.02     // DEX token
+          USDC: 0.35,     // Stability base
+          WETH: 0.25,     // Ethereum exposure
+          SOL: 0.20,      // Solana exposure
+          ARB: 0.08,      // Arbitrum native (with USDC_ARB)
+          OP: 0.05,       // Optimism native (with USDC_OPTIMISM)
+          MATIC: 0.04,    // Polygon native (with USDC_POLYGON)
+          ETH_BASE: 0.03  // Base native (with USDbC)
         };
         for (const sym of Object.keys(targets)) {
           const curAlloc = alloc[sym] || 0;
@@ -475,7 +615,7 @@ async function main() {
             if (t && t.value > MIN_TRADE_USD && t.amount * 0.5 >= MIN_TRADE_AMOUNTS[sym]) {
               const price = await getTokenPrice(getTokenByAddress(t.token));
               if (!price) continue;
-              const usdcToken = getUsdcTokenForChain(t.chain);
+              const usdcToken = getUsdcTokenForChain(getTokenByAddress(t.token));
               console.log(`[DEBUG] ${sym} rebalance sell: amount=${t.amount * 0.5}, min=${MIN_TRADE_AMOUNTS[sym]}, curAlloc=${curAlloc}, target=${target}`);
               if (await canTrade(getTokenByAddress(t.token), usdcToken, t.amount * 0.5)) {
                 await executeTrade(
@@ -503,7 +643,7 @@ async function main() {
                 console.log(`[SKIP] ${sym} rebalance buy: no price available`);
                 continue;
               }
-              const usdcToken = getUsdcTokenForChain(tokenObj.chain);
+              const usdcToken = getUsdcTokenForChain(tokenObj);
               const buyUSD = Math.min((target - curAlloc) * totalValue, usdcValue * 0.3);
               if (buyUSD >= MIN_TRADE_USD) {
                 const buyAmount = buyUSD / price;
@@ -544,7 +684,11 @@ async function main() {
       lastTotalValue = totalValue;
       // --- COMPREHENSIVE LOGGING ---
       console.log(`\n🚀 AGGRESSIVE MULTI-CHAIN CYCLE ${cycleCount} | ${new Date().toLocaleString()}`);
-      console.log(`💰 Portfolio Value: $${formatNum(totalValue)} | USDC Available: $${formatNum(usdcValue)}`);
+      console.log(`💰 Portfolio Value: $${formatNum(totalValue)} | USDC Available: $${formatNum(usdcValue)} (${(usdcRatio * 100).toFixed(1)}%)`);
+      
+      // USDC Health Check
+      const usdcHealth = usdcRatio >= 0.25 ? "🟢 HEALTHY" : usdcRatio >= 0.15 ? "🟡 LOW" : "🔴 CRITICAL";
+      console.log(`💧 USDC Health: ${usdcHealth} - ${(usdcRatio * 100).toFixed(1)}% of portfolio`);
       
       // Show current allocations across all tokens
       console.log(`📊 Current Allocations:`);
@@ -568,12 +712,55 @@ async function main() {
       console.log(`   Total Return: ${((totalValue / initialTotalValue - 1) * 100).toFixed(2)}%`);
       console.log(`   Profit Rate: $${formatNum(cumulativeProfit / cycleCount)} per cycle`);
     } catch (error) {
-      console.error(`[ERROR] Cycle ${cycleCount}: ${error.message}`);
-      console.error(`[ERROR] Stack trace:`, error.stack);
-      // Continue to next cycle instead of crashing
+      console.error(`❌ [CRITICAL ERROR] Cycle ${cycleCount}: ${error.message}`);
+      
+      // Handle specific error types
+      if (error.message.includes('timeout')) {
+        console.log(`⏳ [RECOVERY] Network timeout detected, reducing trade frequency temporarily`);
+        await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL * 2)); // Double wait time
+      } else if (error.message.includes('Insufficient balance')) {
+        console.log(`💰 [RECOVERY] Insufficient balance detected, forcing emergency sell next cycle`);
+      } else if (error.message.includes('Unable to determine price')) {
+        console.log(`📈 [RECOVERY] Price determination failed, skipping problematic tokens temporarily`);
+      } else {
+        console.error(`🔧 [RECOVERY] Unknown error, continuing with standard recovery protocol`);
+      }
+      
+      // Continue to next cycle - NEVER STOP THE 24HR MARATHON
+      console.log(`🚀 [RESILIENCE] Continuing 24hr marathon despite error...`);
     }
+    
     await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL));
   }
+  
+  // 24-HOUR MARATHON COMPLETE - FINAL SUMMARY
+  console.log(`\n🏁 24-HOUR TRADING MARATHON COMPLETED! 🏁`);
+  console.log(`📅 End Time: ${new Date().toLocaleString()}`);
+  
+  const finalPortfolio = await getPortfolio();
+  const finalValue = getTotalPortfolioValue(finalPortfolio.tokens);
+  const totalProfit = finalValue - initialTotalValue;
+  const totalReturn = ((finalValue / initialTotalValue - 1) * 100);
+  const multiplier = finalValue / initialTotalValue;
+  
+  console.log(`\n📊 FINAL RESULTS:`);
+  console.log(`💰 Starting Portfolio: $${formatNum(initialTotalValue)}`);
+  console.log(`💰 Ending Portfolio: $${formatNum(finalValue)}`);
+  console.log(`📈 Total Profit: $${formatNum(totalProfit)}`);
+  console.log(`📈 Total Return: ${totalReturn.toFixed(2)}%`);
+  console.log(`🎯 Portfolio Multiplier: ${multiplier.toFixed(2)}x`);
+  console.log(`🎯 Target Achievement: ${(multiplier >= 2 ? '✅ ACHIEVED' : '❌ MISSED')} (Target: 2.0x)`);
+  
+  console.log(`\n📊 HOURLY BREAKDOWN:`);
+  hourlyData.forEach(h => {
+    console.log(`Hour ${h.hour.toString().padStart(2, '0')}: $${formatNum(h.value)} (${h.return.toFixed(1)}%) at ${h.time}`);
+  });
+  
+  console.log(`\n🏆 MARATHON STATS:`);
+  console.log(`⏱️ Total Cycles: ${cycleCount}`);
+  console.log(`💹 Best Hour: ${Math.max(...hourlyData.map(h => h.return)).toFixed(1)}%`);
+  console.log(`📉 Worst Hour: ${Math.min(...hourlyData.map(h => h.return)).toFixed(1)}%`);
+  console.log(`📊 Average Hourly Return: ${(hourlyData.reduce((sum, h) => sum + h.return, 0) / hourlyData.length).toFixed(2)}%`);
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
